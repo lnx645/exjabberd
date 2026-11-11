@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.PubSub do
   @moduledoc """
-  Publish-Subscribe - `mod_pubsub` (XEP-0060) + PEP (XEP-0163) 100% parity, best-model Elixir.
+  Publish-Subscribe - `mod_pubsub` (XEP-0060) + PEP (XEP-0163) (partial implementation), best-model Elixir.
 
   Node types: leaf, collection. Access models: open, presence, roster, authorize, whitelist.
   Handles:
@@ -337,7 +337,7 @@ defmodule Exjabberd.Mod.PubSub do
 end
 
 defmodule Exjabberd.Mod.Pep do
-  @moduledoc "Personal Eventing Protocol - `mod_pubsub` PEP (XEP-0163) 100% parity. Each user is a pubsub host with auto-create nodes."
+  @moduledoc "Personal Eventing Protocol - `mod_pubsub` PEP (XEP-0163) (partial implementation). Each user is a pubsub host with auto-create nodes."
 
   use Exjabberd.Mod.GenMod
 
@@ -373,7 +373,7 @@ end
 
 defmodule Exjabberd.Mod.Caps do
   @moduledoc """
-  Entity Capabilities - `mod_caps` (XEP-0115) 100% parity.
+  Entity Capabilities - `mod_caps` (XEP-0115) (partial implementation).
 
   Caches caps hash -> features, handles `c` presence like ejabberd.
   """
@@ -426,7 +426,7 @@ end
 
 defmodule Exjabberd.Mod.Disco do
   @moduledoc """
-  Service Discovery - `mod_disco` (XEP-0030) 100% parity. Answers disco#info and disco#items,
+  Service Discovery - `mod_disco` (XEP-0030) (partial implementation). Answers disco#info and disco#items,
   aggregates from all `disco_info` hooks like ejabberd.
   """
 
@@ -437,7 +437,14 @@ defmodule Exjabberd.Mod.Disco do
     Exjabberd.Hooks.add(:disco_info, host, __MODULE__, :info, 50)
     Exjabberd.Hooks.add(:disco_items, host, __MODULE__, :items, 50)
     Exjabberd.Iq.register(host, "http://jabber.org/protocol/disco#info", __MODULE__, :handle_info)
-    Exjabberd.Iq.register(host, "http://jabber.org/protocol/disco#items", __MODULE__, :handle_items)
+
+    Exjabberd.Iq.register(
+      host,
+      "http://jabber.org/protocol/disco#items",
+      __MODULE__,
+      :handle_items
+    )
+
     :ok
   end
 
@@ -468,11 +475,28 @@ defmodule Exjabberd.Mod.Disco do
     # Aggregate features from hooks like ejabberd does
     acc = Exjabberd.Hooks.run_fold(:disco_info, host, %{features: [], identities: []}, [])
 
+    {features, identities} =
+      case iq.to do
+        %Exjabberd.Xmpp.Jid{domain: "conference." <> _} ->
+          # The MUC service answers with its own identity + features.
+          {["http://jabber.org/protocol/disco#info", "http://jabber.org/protocol/muc"],
+           [%{category: "conference", type: "text", name: "exjabberd MUC"}]}
+
+        _ ->
+          {acc.features, acc.identities}
+      end
+
     {:ok,
      %{
        iq
        | type: "result",
-         payload: [%{xmlns: "http://jabber.org/protocol/disco#info", features: acc.features}]
+         payload: [
+           %{
+             xmlns: "http://jabber.org/protocol/disco#info",
+             features: features,
+             identities: identities
+           }
+         ]
      }}
   end
 
@@ -490,7 +514,7 @@ defmodule Exjabberd.Mod.Disco do
 end
 
 defmodule Exjabberd.Mod.Ping do
-  @moduledoc "XMPP Ping - `mod_ping` (XEP-0199) 100% parity. Answers c2s pings and pings clients with `ping_interval` like ejabberd."
+  @moduledoc "XMPP Ping - `mod_ping` (XEP-0199) (partial implementation). Answers c2s pings and pings clients with `ping_interval` like ejabberd."
 
   use Exjabberd.Mod.GenMod
 

@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.Roster do
   @moduledoc """
-  Roster - `mod_roster` (RFC 6121 §2) + `mod_roster` versioning (RFC 6121 §2.6) 100% parity, best-model Elixir.
+  Roster - `mod_roster` (RFC 6121 §2) + `mod_roster` versioning (RFC 6121 §2.6) (partial implementation), best-model Elixir.
 
   Stores roster items per user in ETS (Mnesia in cluster via `Exjabberd.Storage`).
   Handles full subscription lifecycle:
@@ -45,7 +45,8 @@ defmodule Exjabberd.Mod.Roster do
 
   defp ensure_tables do
     for {t, opts} <- [
-          {@table, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true]},
+          {@table,
+           [:named_table, :public, :set, read_concurrency: true, write_concurrency: true]},
           {@version_table, [:named_table, :public, :set, read_concurrency: true]}
         ] do
       if :ets.whereis(t) == :undefined do
@@ -180,11 +181,16 @@ defmodule Exjabberd.Mod.Roster do
         _ -> "unknown"
       end
 
-    ver = get_in(iq.payload, [Access.at(0), :ver])
+    # The <query> element carries the version attribute (XEP-0237).
+    query = Exjabberd.Xmpp.Stanza.child(iq.payload, "query")
+    ver = Exjabberd.Xmpp.Stanza.child_attr(query, "ver")
     {items, cur_ver} = get_roster(host, user, ver)
+
     # Build roster push IQ result
     result_payload =
-      Enum.map(items, fn i -> %{jid: i.jid, subscription: i.subscription, groups: i.groups} end)
+      Enum.map(items, fn i ->
+        %{jid: i.jid, name: i.name, subscription: i.subscription, groups: i.groups}
+      end)
 
     {:ok,
      %{
@@ -195,21 +201,37 @@ defmodule Exjabberd.Mod.Roster do
   end
 
   def handle_iq(%{type: "set"} = iq, host) do
-    # Add/update item via IQ set
-    item = get_in(iq.payload, [Access.at(0), :item]) || %{}
-    jid = Map.get(item, :jid, "")
+    # Add/update/remove an item via IQ set. The payload is a decoded
+    # <query> element; the item lives in its children.
+    query = Exjabberd.Xmpp.Stanza.child(iq.payload, "query")
+    item = query && Exjabberd.Xmpp.Stanza.child(query.children, "item")
+    jid = Exjabberd.Xmpp.Stanza.child_attr(item, "jid") || ""
 
-    if jid != "" do
-      user =
-        case iq.from do
-          %Exjabberd.Xmpp.Jid{local: l} -> l
-          _ -> "unknown"
-        end
+    user =
+      case iq.from do
+        %Exjabberd.Xmpp.Jid{local: l} -> l
+        _ -> "unknown"
+      end
 
-      add_item(host, user, jid, Map.get(item, :groups, []), name: Map.get(item, :name, ""))
-      {:ok, %{iq | type: "result", payload: []}}
-    else
-      {:error, :bad_request}
+    cond do
+      jid == "" ->
+        {:error, :bad_request}
+
+      Exjabberd.Xmpp.Stanza.child_attr(item, "subscription") == "remove" ->
+        remove_item(host, user, jid)
+        {:ok, %{iq | type: "result", payload: []}}
+
+      true ->
+        groups =
+          ((query && item && item.children) || [])
+          |> Enum.filter(&(&1[:name] == "group"))
+          |> Enum.map(&Exjabberd.Xmpp.Stanza.text_of/1)
+
+        add_item(host, user, jid, groups,
+          name: Exjabberd.Xmpp.Stanza.child_attr(item, "name") || ""
+        )
+
+        {:ok, %{iq | type: "result", payload: []}}
     end
   end
 
@@ -237,7 +259,7 @@ defmodule Exjabberd.Mod.Roster do
   @doc false
   def push_item({bare, item}, _host) do
     # Push to all resources like `mod_roster:push_item`
-    for {_res, pid} <- Exjabberd.SessionManager.get_sessions(bare, "global") do
+    for {_res, pid, _prio} <- Exjabberd.SessionManager.get_sessions(bare, "global") do
       send(pid, {:roster_push, item})
     end
 
@@ -275,7 +297,7 @@ end
 
 defmodule Exjabberd.Mod.Privacy do
   @moduledoc """
-  Privacy lists - `mod_privacy` (XEP-0016) 100% parity.
+  Privacy lists - `mod_privacy` (XEP-0016) (partial implementation).
 
   Stores per-user lists with ordered rules (`type`/`value`/`action`/`order`).
   Checks stanzas via `privacy_check_packet` hook like `mod_privacy:check_packet/5`.
@@ -456,7 +478,7 @@ end
 
 defmodule Exjabberd.Mod.Blocking do
   @moduledoc """
-  Blocking command - `mod_blocking` (XEP-0191) 100% parity.
+  Blocking command - `mod_blocking` (XEP-0191) (partial implementation).
 
   Maintains blocklist per user via `privacy` lists with `type=jid`.
   Implements `block`/`unblock` IQ (`urn:xmpp:blocking`) and notifies via `pushed` blocklist.
@@ -623,7 +645,7 @@ defmodule Exjabberd.Mod.Blocking do
   defp notify_blocklist_push(host, user) do
     bare = String.downcase("#{user}@#{host}")
 
-    for {_res, pid} <- Exjabberd.SessionManager.get_sessions(bare, host) do
+    for {_res, pid, _prio} <- Exjabberd.SessionManager.get_sessions(bare, host) do
       send(pid, {:blocking_push, get_blocklist(host, user)})
     end
   end
@@ -631,7 +653,7 @@ end
 
 defmodule Exjabberd.Mod.Vcard do
   @moduledoc """
-  vCard - `mod_vcard` (XEP-0054) 100% parity. Supports Mnesia, LDAP, SQL via `Exjabberd.Storage`.
+  vCard - `mod_vcard` (XEP-0054) (partial implementation). Supports Mnesia, LDAP, SQL via `Exjabberd.Storage`.
   Stores vCards as XML maps per user, handles `vcard-temp` IQ and search.
   """
 
@@ -736,7 +758,7 @@ defmodule Exjabberd.Mod.Vcard do
 end
 
 defmodule Exjabberd.Mod.VcardXupdate do
-  @moduledoc "`mod_vcard_xupdate` (XEP-0153) 100% parity. Publishes avatar hash via PEP."
+  @moduledoc "`mod_vcard_xupdate` (XEP-0153) (partial implementation). Publishes avatar hash via PEP."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, _opts) do
@@ -755,6 +777,7 @@ defmodule Exjabberd.Mod.VcardXupdate do
     hash = :crypto.hash(:sha, inspect(vcard)) |> Base.encode16(case: :lower)
     # Publish to PEP like ejabberd does
     Exjabberd.Mod.PubSub.publish(host, "urn:xmpp:avatar:metadata", hash, %{bare: bare, hash: hash})
+
     data
   rescue
     _ -> data

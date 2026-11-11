@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.Remaining do
   @moduledoc """
-  Remaining ejabberd modules - 100% parity, now with real logic.
+  Remaining ejabberd modules - (partial implementation), now with real logic.
 
   Each mod below has functional ETS/state, not just ` :ok` stubs.
   This guarantees "1000000% sama" — no feature omitted.
@@ -8,7 +8,7 @@ defmodule Exjabberd.Mod.Remaining do
 end
 
 defmodule Exjabberd.Mod.Adhoc do
-  @moduledoc "`mod_adhoc` (XEP-0050) Ad-Hoc Commands 100% parity."
+  @moduledoc "`mod_adhoc` (XEP-0050) Ad-Hoc Commands (partial implementation)."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_adhoc
   @impl true
@@ -38,18 +38,18 @@ defmodule Exjabberd.Mod.Adhoc do
 end
 
 defmodule Exjabberd.Mod.AdminExtra do
-  @moduledoc "`mod_admin_extra` 100% parity. Adds 40+ admin commands to `ejabberdctl`."
+  @moduledoc "`mod_admin_extra` (partial implementation). Adds 40+ admin commands to `ejabberdctl`."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, _opts) do
-    for cmd <- [:num_active_users, :srg_create, :push_roster, :get_roster, :add_rosteritem] do
-      :ets.insert(:exjabberd_admin_extra_dummy, {cmd})
-    end
-
     _ = host
     # Register via Hooks would be here; for now ensure ETS exists
     if :ets.whereis(:exjabberd_admin_extra_dummy) == :undefined do
       :ets.new(:exjabberd_admin_extra_dummy, [:named_table, :public, :set])
+    end
+
+    for cmd <- [:num_active_users, :srg_create, :push_roster, :get_roster, :add_rosteritem] do
+      :ets.insert(:exjabberd_admin_extra_dummy, {cmd})
     end
 
     :ok
@@ -60,7 +60,7 @@ defmodule Exjabberd.Mod.AdminExtra do
 end
 
 defmodule Exjabberd.Mod.Antispam do
-  @moduledoc "`mod_antispam` 100% parity. RTBL + filter + report."
+  @moduledoc "`mod_antispam` (partial implementation). RTBL + filter + report."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_antispam
   @impl true
@@ -91,7 +91,7 @@ defmodule Exjabberd.Mod.Antispam do
 end
 
 defmodule Exjabberd.Mod.AuthFast do
-  @moduledoc "`mod_auth_fast` (XEP-0484 FAST) 100% parity with tokens."
+  @moduledoc "`mod_auth_fast` (XEP-0484 FAST) partial implementation of tokens."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_fast
   @impl true
@@ -122,7 +122,7 @@ defmodule Exjabberd.Mod.AuthFast do
 end
 
 defmodule Exjabberd.Mod.Avatar do
-  @moduledoc "`mod_avatar` (XEP-0084) 100% parity."
+  @moduledoc "`mod_avatar` (XEP-0084) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_avatar
   @impl true
@@ -152,7 +152,7 @@ defmodule Exjabberd.Mod.Avatar do
 end
 
 defmodule Exjabberd.Mod.BlockStrangers do
-  @moduledoc "`mod_block_strangers` 100% parity. Drops stanzas from non-contacts."
+  @moduledoc "`mod_block_strangers` (partial implementation). Drops stanzas from non-contacts."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, opts) do
@@ -176,7 +176,7 @@ defmodule Exjabberd.Mod.BlockStrangers do
 end
 
 defmodule Exjabberd.Mod.Bosh do
-  @moduledoc "`mod_bosh` (XEP-0124 + XEP-0206) 100% parity. Holds BOSH sessions."
+  @moduledoc "`mod_bosh` (XEP-0124 + XEP-0206) (partial implementation). Holds BOSH sessions."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_bosh
   @impl true
@@ -208,7 +208,7 @@ defmodule Exjabberd.Mod.Bosh do
 end
 
 defmodule Exjabberd.Mod.Captcha do
-  @moduledoc "`mod_captcha` (XEP-0158) 100% parity."
+  @moduledoc "`mod_captcha` (XEP-0158) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_captcha
   @impl true
@@ -239,7 +239,7 @@ defmodule Exjabberd.Mod.Captcha do
 end
 
 defmodule Exjabberd.Mod.Conversejs do
-  @moduledoc "`mod_conversejs` 100% parity. Serves ConverseJS config."
+  @moduledoc "`mod_conversejs` (partial implementation). Serves ConverseJS config."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -250,7 +250,7 @@ defmodule Exjabberd.Mod.Conversejs do
 end
 
 defmodule Exjabberd.Mod.Delegation do
-  @moduledoc "`mod_delegation` (XEP-0356) 100% parity."
+  @moduledoc "`mod_delegation` (XEP-0356) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, _opts) do
@@ -270,7 +270,7 @@ defmodule Exjabberd.Mod.Delegation do
 end
 
 defmodule Exjabberd.Mod.Fail2ban do
-  @moduledoc "`mod_fail2ban` 100% parity. Bans IPs after N failures."
+  @moduledoc "`mod_fail2ban` (partial implementation). Bans IPs after N failures."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_fail2ban
   @impl true
@@ -309,7 +309,7 @@ defmodule Exjabberd.Mod.Fail2ban do
 end
 
 defmodule Exjabberd.Mod.HttpUpload do
-  @moduledoc "`mod_http_upload` (XEP-0363) 100% parity. Issues PUT slots."
+  @moduledoc "`mod_http_upload` (XEP-0363) (partial implementation). Issues PUT slots."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_upload_slots
   @impl true
@@ -348,7 +348,7 @@ defmodule Exjabberd.Mod.HttpUpload do
 end
 
 defmodule Exjabberd.Mod.Last do
-  @moduledoc "`mod_last` (XEP-0012) 100% parity. Stores last activity."
+  @moduledoc "`mod_last` (XEP-0012) (partial implementation). Stores last activity."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_last
   @impl true
@@ -391,7 +391,7 @@ defmodule Exjabberd.Mod.Last do
 end
 
 defmodule Exjabberd.Mod.LegacyAuth do
-  @moduledoc "`mod_legacy_auth` (XEP-0078) 100% parity."
+  @moduledoc "`mod_legacy_auth` (XEP-0078) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -400,7 +400,7 @@ defmodule Exjabberd.Mod.LegacyAuth do
 end
 
 defmodule Exjabberd.Mod.Mqtt do
-  @moduledoc "`mod_mqtt` (MQTT 3.1.1/5.0 broker) 100% parity. Bridges MQTT to XMPP."
+  @moduledoc "`mod_mqtt` (MQTT 3.1.1/5.0 broker) (partial implementation). Bridges MQTT to XMPP."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_mqtt
   @impl true
@@ -437,7 +437,7 @@ defmodule Exjabberd.Mod.OfflinePush do
 end
 
 defmodule Exjabberd.Mod.Private do
-  @moduledoc "`mod_private` (XEP-0049) 100% parity. Private XML storage."
+  @moduledoc "`mod_private` (XEP-0049) (partial implementation). Private XML storage."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_private
   @impl true
@@ -467,7 +467,7 @@ defmodule Exjabberd.Mod.Private do
 end
 
 defmodule Exjabberd.Mod.Proxy65 do
-  @moduledoc "`mod_proxy65` (XEP-0065 SOCKS5) 100% parity."
+  @moduledoc "`mod_proxy65` (XEP-0065 SOCKS5) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_proxy65
   @impl true
@@ -491,7 +491,7 @@ defmodule Exjabberd.Mod.Proxy65 do
 end
 
 defmodule Exjabberd.Mod.Push do
-  @moduledoc "`mod_push` (XEP-0357) 100% parity. Stores push JIDs per user."
+  @moduledoc "`mod_push` (XEP-0357) (partial implementation). Stores push JIDs per user."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_push
   @impl true
@@ -530,7 +530,7 @@ defmodule Exjabberd.Mod.Push do
 end
 
 defmodule Exjabberd.Mod.Register do
-  @moduledoc "`mod_register` (XEP-0077) 100% parity. In-band registration."
+  @moduledoc "`mod_register` (XEP-0077) (partial implementation). In-band registration."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_register
   @impl true
@@ -541,6 +541,7 @@ defmodule Exjabberd.Mod.Register do
 
     access = Keyword.get(opts, :access, :all)
     Exjabberd.Hooks.add(:register_user, host, __MODULE__, :on_register, 50)
+    Exjabberd.Iq.register(host, "jabber:iq:register", __MODULE__, :handle_iq)
     _ = access
     :ok
   end
@@ -548,7 +549,45 @@ defmodule Exjabberd.Mod.Register do
   @impl true
   def stop(host) do
     Exjabberd.Hooks.delete(:register_user, host, __MODULE__, :on_register)
+    Exjabberd.Iq.unregister(host, "jabber:iq:register", :both)
     :ok
+  end
+
+  @doc false
+  def handle_iq(%{type: "get"} = iq, _host) do
+    {:ok,
+     %{
+       iq
+       | type: "result",
+         payload: [
+           %{
+             xmlns: "jabber:iq:register",
+             instructions: "Choose a username and password.",
+             username: "",
+             password: ""
+           }
+         ]
+     }}
+  end
+
+  def handle_iq(%{type: "set"} = iq, host) do
+    query = Exjabberd.Xmpp.Stanza.child(iq.payload, "query")
+    username = Exjabberd.Xmpp.Stanza.child_text(query && query.children, "username")
+    password = Exjabberd.Xmpp.Stanza.child_text(query && query.children, "password")
+
+    cond do
+      is_nil(username) or username == "" or is_nil(password) or password == "" ->
+        {:error, :bad_request}
+
+      Exjabberd.Auth.user_exists(host, username) ->
+        {:error, :conflict}
+
+      true ->
+        case Exjabberd.Auth.create_user(host, username, password) do
+          :ok -> {:ok, %{iq | type: "result", payload: []}}
+          {:error, _} -> {:error, :internal_server_error}
+        end
+    end
   end
 
   @doc false
@@ -565,7 +604,7 @@ defmodule Exjabberd.Mod.RosterVersioning do
 end
 
 defmodule Exjabberd.Mod.S2S do
-  @moduledoc "`mod_s2s_dialback` 100% parity. Verifies dialback keys."
+  @moduledoc "`mod_s2s_dialback` (partial implementation). Verifies dialback keys."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_s2s_dialback
   @impl true
@@ -599,7 +638,7 @@ defmodule Exjabberd.Mod.S2S do
 end
 
 defmodule Exjabberd.Mod.SharedRoster do
-  @moduledoc "`mod_shared_roster` 100% parity. Shared groups with display."
+  @moduledoc "`mod_shared_roster` (partial implementation). Shared groups with display."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_shared_roster
   @impl true
@@ -630,7 +669,7 @@ end
 
 defmodule Exjabberd.Mod.Sip do
   @moduledoc """
-  SIP gateway - `mod_sip` + `mod_sip_proxy` + `mod_sip_registrar` 100% parity untuk vcall.
+  SIP gateway - `mod_sip` + `mod_sip_proxy` + `mod_sip_registrar` (partial implementation) untuk vcall.
 
   Bridges XMPP Jingle ↔ SIP INVITE seperti ejabberd `mod_sip`.
   Menangani REGISTER, INVITE, BYE, ACK, CANCEL, SDP `m=audio` + `a=rtpmap`, dan
@@ -726,7 +765,7 @@ defmodule Exjabberd.Mod.Sip do
 end
 
 defmodule Exjabberd.Mod.StunDispatch do
-  @moduledoc "`mod_stun_disco` (XEP-0215) 100% parity. Advertises STUN/TURN."
+  @moduledoc "`mod_stun_disco` (XEP-0215) (partial implementation). Advertises STUN/TURN."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, _opts) do
@@ -746,26 +785,50 @@ defmodule Exjabberd.Mod.StunDispatch do
 end
 
 defmodule Exjabberd.Mod.Time do
-  @moduledoc "`mod_time` (XEP-0202) 100% parity. Returns entity time."
+  @moduledoc "`mod_time` (XEP-0202) (partial implementation). Returns entity time."
   use Exjabberd.Mod.GenMod
   @impl true
-  def start(_host, _opts), do: :ok
+  def start(host, _opts) do
+    Exjabberd.Iq.register(host, "urn:xmpp:time", __MODULE__, :handle_iq)
+    :ok
+  end
+
   @impl true
-  def stop(_host), do: :ok
+  def stop(host) do
+    Exjabberd.Iq.unregister(host, "urn:xmpp:time", :both)
+    :ok
+  end
+
   @doc "Get time stanza."
   def time do
     dt = DateTime.utc_now() |> DateTime.to_iso8601()
     %{tzo: "+00:00", utc: dt}
   end
+
+  @doc false
+  def handle_iq(%{type: "get"} = iq, _host) do
+    %{tzo: tzo, utc: utc} = time()
+    {:ok, %{iq | type: "result", payload: [%{xmlns: "urn:xmpp:time", tzo: tzo, utc: utc}]}}
+  end
+
+  def handle_iq(iq, _host), do: {:ok, %{iq | type: "result", payload: []}}
 end
 
 defmodule Exjabberd.Mod.Version do
-  @moduledoc "`mod_version` (XEP-0092) 100% parity."
+  @moduledoc "`mod_version` (XEP-0092) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
-  def start(_host, _opts), do: :ok
+  def start(host, _opts) do
+    Exjabberd.Iq.register(host, "jabber:iq:version", __MODULE__, :handle_iq)
+    :ok
+  end
+
   @impl true
-  def stop(_host), do: :ok
+  def stop(host) do
+    Exjabberd.Iq.unregister(host, "jabber:iq:version", :both)
+    :ok
+  end
+
   @doc "Get version."
   def version_info do
     %{
@@ -774,11 +837,23 @@ defmodule Exjabberd.Mod.Version do
       os: :erlang.system_info(:otp_release) |> to_string()
     }
   end
+
+  @doc false
+  def handle_iq(%{type: "get"} = iq, host) do
+    info = version_info()
+    show_os = Exjabberd.Mod.Supervisor.get_opts(host, __MODULE__) |> Keyword.get(:show_os, true)
+
+    payload = %{xmlns: "jabber:iq:version", name: info.name, version: info.version}
+    payload = if show_os, do: Map.put(payload, :os, info.os), else: payload
+    {:ok, %{iq | type: "result", payload: [payload]}}
+  end
+
+  def handle_iq(iq, _host), do: {:ok, %{iq | type: "result", payload: []}}
 end
 
 defmodule Exjabberd.Mod.Mix do
   @moduledoc """
-  MIX - XEP-0369 Mediated Information eXchange 100% parity, best-model, stabil production.
+  MIX - XEP-0369 Mediated Information eXchange (partial implementation), best-model, stabil production.
   Channels are PubSub nodes with MIX semantics: participants, nodes, JID anonymization via PAM.
   Handles `create/join/leave/send_message/set_nick` like `mod_mix` does via `gen_pubsub_node` + `mod_mix_pam`.
   Anonymization: `stable_id` per participant (XEP-0369 §5.3), real JID hidden behind `stable_id@channel`.
@@ -959,7 +1034,9 @@ defmodule Exjabberd.Mod.Mix do
   @doc "Stable ID (XEP-0369 §5.3) — `hash(jid+channel)` like ejabberd."
   @spec stable_id(binary(), binary()) :: binary()
   def stable_id(jid, channel) when is_binary(jid) and is_binary(channel) do
-    :crypto.hash(:sha256, "#{jid}:#{channel}") |> Base.encode16(case: :lower) |> binary_part(0, 16)
+    :crypto.hash(:sha256, "#{jid}:#{channel}")
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   defp broadcast_presence(host, channel, anon_jid, type) do
@@ -984,7 +1061,7 @@ defmodule Exjabberd.Mod.Mix do
 end
 
 defmodule Exjabberd.Mod.HttpApi do
-  @moduledoc "`mod_http_api` (REST API) 100% parity. Exposes ejabberd_commands over HTTP."
+  @moduledoc "`mod_http_api` (REST API) (partial implementation). Exposes ejabberd_commands over HTTP."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -995,7 +1072,7 @@ defmodule Exjabberd.Mod.HttpApi do
 end
 
 defmodule Exjabberd.Mod.Configure do
-  @moduledoc "`mod_configure` (XEP-0030 + 0050 configure) 100% parity."
+  @moduledoc "`mod_configure` (XEP-0030 + 0050 configure) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -1004,7 +1081,7 @@ defmodule Exjabberd.Mod.Configure do
 end
 
 defmodule Exjabberd.Mod.Stats do
-  @moduledoc "`mod_stats` 100% parity. Exposes stats via disco."
+  @moduledoc "`mod_stats` (partial implementation). Exposes stats via disco."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_stats
   @impl true

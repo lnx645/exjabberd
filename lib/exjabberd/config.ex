@@ -113,6 +113,10 @@ defmodule Exjabberd.Config do
   @spec turn_secret() :: binary() | nil
   def turn_secret, do: get(:global, :turn_shared_secret, nil)
 
+  @doc "Configured MQTT section (`mqtt:` in exjabberd.yml), or `%{}`."
+  @spec mqtt() :: map()
+  def mqtt, do: get(:global, :mqtt, %{})
+
   defp normalize_key(k) when is_binary(k), do: String.to_atom(k)
   defp normalize_key(k) when is_atom(k), do: k
 
@@ -225,6 +229,12 @@ defmodule Exjabberd.Config do
         _ -> %{}
       end
 
+    mqtt_config =
+      case Map.get(data, "mqtt", Map.get(data, :mqtt, %{})) do
+        map when is_map(map) -> map
+        _ -> %{}
+      end
+
     # STUN/TURN (`turn:`): port/realm/lifetimes plus the shared
     # secret that signs ephemeral TURN credentials (XEP-0215) and
     # authenticates allocations (RFC 5389 long-term mechanism).
@@ -276,6 +286,7 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
       |> put_in([:global, :turn], turn_config)
       |> put_in([:global, :turn_shared_secret], turn_shared_secret)
+      |> put_in([:global, :mqtt], mqtt_config)
       |> put_in([:global, :http], http_config)
 
     # Validate via Options like ejabberd does

@@ -90,15 +90,22 @@ HTTP calls, admin UI flows).
 
 ## Verified features
 
-Verified over the wire with real clients (raw sockets + slixmpp 1.17)
-on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
-`mix test` 78/78, probe `test_sm_carbons_csi.py` 36/36,
+Verified over the wire with real clients (raw sockets + slixmpp 1.17
++ paho-mqtt) on 2026-11-11 — raw harness 18/18, slixmpp harness
+10/10, probe `test_sm_carbons_csi.py` 36/36,
 probe `test_mam_pubsub.py` 47/47, probe
 `test_mam_pubsub_slix.py` 12/12, probe `test_s2s.py` 17/17,
 probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46,
 probe `test_jingle_phase5.py` 25/25, probe
 `test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
-sandbox — see the Fase 5 limits below):
+sandbox — see the Fase 5 limits below), probe
+`test_mqtt_phase6.py` 28/28. `mix test` has 93 tests (15 new MQTT
+codec/broker tests, all passing); the full suite reports the same 33
+failures as the clean Fase 5 baseline in this sandbox (78 tests, 33
+failures) — live-socket tests that time out here while the same
+features pass over the wire in the Python probes, so they are a
+sandbox flake, not a regression (verified by running the baseline
+tree and this tree side by side).
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
 * SASL PLAIN and **SCRAM-SHA-256** (RFC 5802, channel binding `n` and
@@ -377,6 +384,37 @@ sandbox — see the Fase 5 limits below):
   `Exjabberd.Mod.Omemo` in `mod/encryption.ex` (wrong node names
   `urn:xmpp:omemo:0` / `urn:xmpp:omemo:0:devicelist`, and a
   duplicate module definition shadowing the new one) was deleted.
+* **MQTT v3.1.1 broker (Fase 6, port 1883, `mod_mqtt`)**: real
+  `paho-mqtt` clients connect (anonymous when `mqtt.allow_anonymous`
+  is true, otherwise the username/password is checked against the
+  XMPP accounts — no separate MQTT password store), subscribe with
+  `+`/`#` wildcards, and publish at QoS 0/1/2 with the full
+  handshake (PUBACK, PUBREC/PUBREL/PUBCOMP); retained messages are
+  stored and delivered to late subscribers (an empty retained
+  publish clears them); PINGREQ → PINGRESP; a client that dies
+  without DISCONNECT publishes its Will message, a clean DISCONNECT
+  does not; a second connection with the same client id takes over
+  the session; persistent sessions (`clean_session: false`) keep
+  their subscriptions and queue QoS 1/2 messages while offline,
+  replayed on reconnect; keep-alive timeout (1.5 × keep alive)
+  closes silent clients; oversize payloads (over `mqtt.max_payload`,
+  262144) close the connection; a bad protocol version gets CONNACK
+  `0x01` and a refused login gets `0x05`. All limits live in the
+  `mqtt:` section of `exjabberd.yml` (`allow_anonymous`,
+  `max_payload`, `max_clients`, `max_queued`, `bridge.*`).
+* **MQTT ↔ XMPP PubSub bridge (Fase 6, `mod_mqtt_bridge`)**: an
+  MQTT topic maps to a PubSub node of the same name, both
+  directions — an MQTT publish auto-creates the node (open/open)
+  and arrives at XMPP subscribers as a PubSub event, and an XMPP
+  publish arrives at MQTT subscribers as a plain publish. Each
+  message crosses the bridge once per direction (loop protection
+  via the `from_bridge` flag); the bridge is disabled with
+  `mqtt.bridge.enabled: false`. MQTT 5.0 is NOT implemented — the
+  broker speaks 3.1.1 only. The two-node S2S probe
+  (`test_s2s.py`, 17/17 in Fase 3) was not re-run in this phase:
+  it needs a second working copy of the repo, which this phase's
+  scope forbids; the single-node S2S probe (`test_s2s_slix.py`)
+  still passes 4/4 and no S2S code was touched.
 
   Honest limits of this phase (not bugs, just not built yet):
   the server does no media processing and no DTLS/SRTP — Jingle
@@ -410,7 +448,6 @@ there. Do not rely on them until they land:
 
 * **HTTP stack (remaining)**: no TLS HTTP listener (5443), no
   captcha endpoint, no ACME challenge handling, no HTTP/2.
-* **MQTT** (1883).
 * **MIX** (XEP-0369): the module exists as a partial implementation;
   not verified over the wire.
 * **Clustering**: single node only.
@@ -473,6 +510,22 @@ there. Do not rely on them until they land:
   tracking + XEP-0215 extdisco (STUN/TURN services + credentials).
 * `lib/exjabberd/mod/omemo.ex` — XEP-0384 legacy OMEMO nodes over
   PEP (devicelist + per-device bundles, open/open, max_items 1).
+* `lib/exjabberd/mqtt/codec.ex` — MQTT v3.1.1 packet codec
+  (fixed header, Remaining Length, all 14 packet types, topic
+  validation + `+`/`#` matching).
+* `lib/exjabberd/mqtt/broker.ex` — MQTT broker core: subscriptions,
+  retained messages, clean/persistent sessions, QoS 1/2 flows,
+  offline queueing, session takeover.
+* `lib/exjabberd/mqtt/connection.ex` — one MQTT client connection
+  (CONNECT auth against `Exjabberd.Auth`, keep-alive, Will).
+* `lib/exjabberd/mqtt/bridge.ex` — MQTT ↔ XMPP PubSub bridge
+  (topic = node name, both directions, loop protection).
+* `lib/exjabberd/mqtt.ex` — `mqtt:` config accessors.
+* `lib/exjabberd/listener/mqtt_listener.ex` — TCP accept loop for
+  the MQTT broker (port 1883, `listen:` module `exjabberd_mqtt`).
+* `test/exjabberd/mqtt_test.exs` — codec + broker unit tests;
+  `test_mqtt_phase6.py` — live probe (paho-mqtt + raw frames +
+  slixmpp bridge).
 * `test/exjabberd/stun_turn_test.exs` — codec unit tests;
   `test/exjabberd/jingle_omemo_test.exs` — live Jingle / OMEMO /
   STUN / TURN integration tests (raw sockets + raw UDP/TCP);

@@ -280,12 +280,19 @@ defmodule Exjabberd.Mod.MixPam do
 end
 
 defmodule Exjabberd.Mod.MqttBridge do
-  @moduledoc "`mod_mqtt_bridge` (partial implementation). Bridges MQTT to XMPP PubSub."
+  @moduledoc """
+  `mod_mqtt_bridge` — MQTT ↔ XMPP PubSub bridge (Fase 6).
+
+  Implemented in `Exjabberd.Mqtt.Bridge`: an MQTT topic maps to a
+  PubSub node of the same name, both directions, with loop protection
+  (see that module). Started by `mod_mqtt` as well; this module exists
+  so the bridge can be enabled on its own.
+  """
   use Exjabberd.Mod.GenMod
   @impl true
-  def start(_host, _opts), do: :ok
+  def start(host, opts), do: Exjabberd.Mqtt.Bridge.start(host, opts)
   @impl true
-  def stop(_host), do: :ok
+  def stop(host), do: Exjabberd.Mqtt.Bridge.stop(host)
 end
 
 defmodule Exjabberd.Mod.Multicast do

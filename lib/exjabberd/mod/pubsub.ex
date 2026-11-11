@@ -492,6 +492,13 @@ defmodule Exjabberd.Mod.PubSub do
             end)
           end
 
+          # MQTT bridge (Fase 6): forward the item to MQTT subscribers
+          # of the node name as topic — unless this publish itself came
+          # from the bridge, in which case echoing it back would loop.
+          unless Keyword.get(opts, :from_bridge, false) do
+            Exjabberd.Hooks.run(:pubsub_publish_item, host, {node, item_id, payload})
+          end
+
           :ok
         else
           {:error, :forbidden}

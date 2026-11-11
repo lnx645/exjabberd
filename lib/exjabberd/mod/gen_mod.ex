@@ -271,6 +271,7 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_last"), do: Exjabberd.Mod.Last
   def module_for("mod_mam"), do: Exjabberd.Mod.Mam
   def module_for("mod_mqtt"), do: Exjabberd.Mod.Mqtt
+  def module_for("mod_mqtt_bridge"), do: Exjabberd.Mod.MqttBridge
   def module_for("mod_jingle"), do: Exjabberd.Mod.Jingle
   def module_for("mod_muc"), do: Exjabberd.Mod.Muc
   def module_for("mod_muc_admin"), do: Exjabberd.Mod.MucAdmin

@@ -60,6 +60,12 @@ listen:
     # (/bosh, /http-bind), XMPP over WebSocket (/ws) and HTTP File
     # Upload (/upload). Plain HTTP only; put a reverse proxy with
     # TLS in front of it in production.
+  -
+    port: 1883
+    ip: "::"
+    module: exjabberd_mqtt
+    # MQTT v3.1.1 broker (Fase 6). Options live in the `mqtt:`
+    # section; authentication reuses the XMPP accounts.
 ## NOT IMPLEMENTED (removed from the active listen list on purpose —
 ## the old file claimed these ports, but nothing ever listened on them):
 ##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — the
@@ -69,9 +75,6 @@ listen:
 ##   5280  HTTP: /admin, /.well-known/acme-challenge — /admin exists
 ##         now; ACME challenge handling does not.
 ##   5478  STUN/TURN over UDP — not implemented.
-##   1883  MQTT — not implemented.
-    module: mod_mqtt
-    backlog: 1000
 
 s2s_use_starttls: optional
 

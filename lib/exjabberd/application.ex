@@ -41,6 +41,7 @@ defmodule Exjabberd.Application do
       {Exjabberd.ListenerSupervisor, []},
       {Exjabberd.Mod.Supervisor, []},
       {Exjabberd.Mod.Muc.Supervisor, []},
+      {Exjabberd.Mqtt.Broker, []},
       {Exjabberd.Auth.Mnesia, []}
     ]
 
@@ -182,6 +183,12 @@ defmodule Exjabberd.Application do
           start_listener(
             {Exjabberd.Http.Server, [port: port, host: host, name: Exjabberd.Http.Server]},
             "HTTP on #{port} (admin/BOSH/WS/upload/API)"
+          )
+
+        module == "exjabberd_mqtt" ->
+          start_listener(
+            {Exjabberd.Listener.Mqtt, [port: port, host: host, name: Exjabberd.Listener.Mqtt]},
+            "MQTT on #{port}"
           )
 
         true ->

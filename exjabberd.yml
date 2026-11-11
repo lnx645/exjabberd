@@ -60,6 +60,13 @@ listen:
     # (/bosh, /http-bind), XMPP over WebSocket (/ws) and HTTP File
     # Upload (/upload). Plain HTTP only; put a reverse proxy with
     # TLS in front of it in production.
+  -
+    port: 1883
+    ip: "::"
+    module: exjabberd_mqtt
+    # MQTT v3.1.1 broker (Fase 6). Options live in the `mqtt:`
+    # section below; authentication reuses the XMPP accounts
+    # (Auth backend) when a username is given.
 ## NOT IMPLEMENTED (removed from the active listen list on purpose —
 ## the old file claimed these ports, but nothing ever listened on them):
 ##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — the
@@ -71,9 +78,6 @@ listen:
 ##   5478  STUN/TURN over UDP (+TCP) — implemented in Fase 5
 ##         (Exjabberd.StunTurn.Server, from the `turn:` section
 ##         above, not from `listen:`).
-##   1883  MQTT — not implemented.
-    module: mod_mqtt
-    backlog: 1000
 
 s2s_use_starttls: optional
 
@@ -140,6 +144,22 @@ turn:
   # advertise a different address than the bind address.
   # relay_ip: "203.0.113.10"
   # advertise_ip: "203.0.113.10"
+
+## MQTT v3.1.1 broker (Fase 6) — port 1883, from the `listen:` entry
+## above. `allow_anonymous: true` accepts CONNECT without a username;
+## with a username, the password is checked against the XMPP accounts
+## (Auth backend) — there is no separate MQTT password store.
+## `bridge` maps MQTT topics to PubSub nodes of the same name, both
+## directions; `auto_create_node` creates the node on first publish.
+mqtt:
+  allow_anonymous: true
+  max_payload: 262144
+  max_clients: 1000
+  max_queued: 100
+  bridge:
+    enabled: true
+    auto_create_node: true
+    prefix: ""
 
 acl:
   local:

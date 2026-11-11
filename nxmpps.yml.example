@@ -78,7 +78,7 @@ listen:
   -
     port: 1883
     ip: "::"
-    module: mod_mqtt
+    module: exjabberd_mqtt
     backlog: 1000
 
 s2s_use_starttls: optional

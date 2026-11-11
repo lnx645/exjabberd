@@ -470,30 +470,42 @@ defmodule Exjabberd.Mod.LegacyAuth do
 end
 
 defmodule Exjabberd.Mod.Mqtt do
-  @moduledoc "`mod_mqtt` (MQTT 3.1.1/5.0 broker) (partial implementation). Bridges MQTT to XMPP."
+  @moduledoc """
+  `mod_mqtt` — MQTT v3.1.1 broker on port 1883 (Fase 6).
+
+  The broker itself is `Exjabberd.Mqtt.Broker` (started as a supervised
+  child, listening via `Exjabberd.Listener.Mqtt` from the `listen:`
+  entry `module: exjabberd_mqtt`); this module is the `mod_mqtt`
+  entry point that starts the MQTT ↔ XMPP PubSub bridge
+  (`Exjabberd.Mqtt.Bridge`) and exposes the programmatic
+  publish/subscribe API. Configuration lives in the `mqtt:` section
+  of `exjabberd.yml` — no credentials are stored here; CONNECT with a
+  username is authenticated against the Auth backend.
+  """
   use Exjabberd.Mod.GenMod
-  @table :exjabberd_mqtt
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :bag])
-    end
 
+  alias Exjabberd.Mqtt.{Bridge, Broker}
+
+  @impl true
+  def start(host, _opts) do
+    Bridge.start(host)
     :ok
   end
 
   @impl true
-  def stop(_host), do: :ok
-  @doc "Publish MQTT message."
+  def stop(host) do
+    Bridge.stop(host)
+    :ok
+  end
+
+  @doc "Publish an MQTT message (also forwarded to PubSub by the bridge unless it came from there)."
   def publish(topic, payload, qos \\ 0) do
-    :ets.insert(@table, {topic, %{payload: payload, qos: qos, ts: System.system_time(:second)}})
-    :ok
+    Broker.publish(topic, payload, qos, false)
   end
 
-  @doc "Subscribe MQTT."
+  @doc "Subscribe a pid to an MQTT topic filter."
   def subscribe(topic, pid) when is_pid(pid) do
-    :ets.insert(@table, {{:sub, topic}, pid})
-    :ok
+    Broker.subscribe_pid(pid, topic, 0)
   end
 end
 

@@ -92,10 +92,13 @@ HTTP calls, admin UI flows).
 
 Verified over the wire with real clients (raw sockets + slixmpp 1.17)
 on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
-`mix test` 56/56, probe `test_sm_carbons_csi.py` 36/36,
+`mix test` 78/78, probe `test_sm_carbons_csi.py` 36/36,
 probe `test_mam_pubsub.py` 47/47, probe
 `test_mam_pubsub_slix.py` 12/12, probe `test_s2s.py` 17/17,
-probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46:
+probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46,
+probe `test_jingle_phase5.py` 25/25, probe
+`test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
+sandbox — see the Fase 5 limits below):
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
 * SASL PLAIN and **SCRAM-SHA-256** (RFC 5802, channel binding `n` and
@@ -298,6 +301,108 @@ probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46:
   pages; the old stub `Exjabberd.Web.*` modules were deleted and
   `Exjabberd.Web.handle/1` now delegates to the real router.
 
+* **Jingle signaling (XEP-0166 + XEP-0176 ICE-UDP, `mod_jingle`)**:
+  the server is signaling-only — it never touches media. IQ-sets
+  with a `<jingle/>` payload between two full JIDs are intercepted
+  (`session-initiate`, `session-accept`, `session-terminate`,
+  `transport-info`, `session-info`): the stanza is routed verbatim
+  to the peer (content / description / transport / ICE candidates
+  byte-identical on the wire) and the peer's own IQ-result/error
+  is the initiator's answer — the server never fakes an ack.
+  Sessions live in ETS keyed `{host, sid}` with initiator,
+  responder and state (`pending` → `active` on accept); a
+  `session-terminate` or either party disconnecting deletes the
+  session. Wrong-side actions and unknown actions get the spec
+  errors: `session-terminate` on an unknown sid →
+  `item-not-found` + `<unknown-session/>`
+  (`urn:xmpp:jingle:errors:1`), an unknown action →
+  `feature-not-implemented`, a malformed initiate →
+  `bad-request`. Federated Jingle to a local user passes the same
+  gate (tracked, routed, or answered back over S2S); Jingle to a
+  remote user is routed onward untouched. The old stub
+  `handle_jingle` (which answered without forwarding) is gone.
+* **STUN (RFC 5389) + TURN (RFC 5766) on port 5478
+  (`Exjabberd.StunTurn.*`, UDP + TCP)**: Binding Request →
+  Binding Success with XOR-MAPPED-ADDRESS (and MAPPED-ADDRESS)
+  and MESSAGE-INTEGRITY + FINGERPRINT when requested; Allocate
+  with the RFC 5389 long-term credential mechanism (401 with
+  REALM + stateless NONCE, then USERNAME / REALM / NONCE /
+  MESSAGE-INTEGRITY with key `MD5(username:realm:password)` where
+  the password is `Base64(HMAC-SHA1(shared_secret, username))` —
+  the same derivation XEP-0215 advertises, so no password store
+  exists); wrong password → 401, duplicate allocation → 437,
+  Refresh (lifetime 0 deletes), CreatePermission (300 s),
+  ChannelBind + ChannelData relay (600 s), Send/Data indication
+  relay through a real relayed UDP socket per allocation, and
+  Delete Allocation. TURN over TCP uses the RFC 5766 §7.2
+  length-prefixed framing (STUN + ChannelData share one
+  per-connection process). The relay socket binds `0.0.0.0` but
+  advertises a reachable address (the resolved `turn.host`,
+  `127.0.0.1` by default; `turn.relay_ip` / `turn.advertise_ip`
+  override it). All of it is configured in the `turn:` section of
+  `exjabberd.yml` (port, host, realm, shared secret, TCP on/off,
+  lifetimes, `max_allocations`); the secret is never hardcoded —
+  when absent the server generates an ephemeral one at boot (like
+  the dialback secret) and logs a warning.
+* **External service discovery (XEP-0215, `urn:xmpp:extdisco:2`)**:
+  IQ-get `<services/>` answers the STUN service and the TURN
+  service (UDP + TCP) with per-user time-limited credentials
+  (`username='<unix-expiry>:<user>@<host>'`, password derived from
+  the TURN shared secret); the legacy `:1` namespace is answered
+  the same way. The server disco#info advertises
+  `urn:xmpp:jingle:1`, `urn:xmpp:jingle:apps:rtp:1`,
+  `urn:xmpp:jingle:transports:ice-udp:1` and `urn:xmpp:extdisco:2`.
+* **OMEMO over PEP (XEP-0384 legacy generation + XEP-0163,
+  `mod_omemo`)**: the device list node
+  `eu.siacs.conversations.axolotl.devicelist` and one bundle node
+  per device `eu.siacs.conversations.axolotl.bundles:<deviceId>`
+  live on the user's own bare JID as PEP nodes (internal key
+  `<bare JID>/<node>`, so two users publishing the same node name
+  never collide). First publish auto-creates the node (XEP-0163
+  §4) with the OMEMO config — access `open`, publish `open`,
+  `max_items: 1`, `persist_items: true`; publish-options are
+  honoured, and `pubsub#max_items = "max"` means 100,000.
+  Publishing to someone else's PEP nodes is `forbidden`; a contact
+  fetches the list / bundle with an IQ-get to the owner's bare
+  JID and gets the payload byte-identical; subscriptions get a
+  `<message type='headline'>` notification from the owner's bare
+  JID on republish. Bare-JID disco#info advertises
+  `urn:xmpp:omemo:0` and bare-JID disco#items lists the user's PEP
+  nodes (the service disco#items no longer leaks them). PEP
+  PubSub and bare-JID disco IQs addressed to a local user are now
+  answered by the server itself instead of being delivered to
+  that user's client socket — that was a pre-existing routing gap
+  (C2S delivered every routed IQ to the client); the same
+  interception applies to federated PEP/disco over S2S. The old
+  `Exjabberd.Mod.Omemo` in `mod/encryption.ex` (wrong node names
+  `urn:xmpp:omemo:0` / `urn:xmpp:omemo:0:devicelist`, and a
+  duplicate module definition shadowing the new one) was deleted.
+
+  Honest limits of this phase (not bugs, just not built yet):
+  the server does no media processing and no DTLS/SRTP — Jingle
+  is signaling only; federated Jingle is routed but the session
+  is only tracked on the node that saw the initiate (a terminate
+  arriving via the other node is not tracked there); OMEMO is the
+  legacy generation only — the newer `urn:xmpp:omemo:1` / `:2`
+  generations (single `...:bundles` node, `urn:xmpp:omemo:2:devices`)
+  are not implemented or advertised; TURN has no per-user quota
+  beyond the global `max_allocations`; STUN Binding without
+  credentials is answered unauthenticated (allowed by RFC 5389);
+  **UDP wire verification could not run in this sandbox**: the
+  sandbox blocks UDP `sendto` with EPERM for every process
+  (proven by a minimal Python repro — `socket.sendto` to
+  127.0.0.1 fails with `PermissionError` — and `aiortc` 1.16 was
+  installed but cannot help, it uses UDP too), so the live UDP
+  STUN/TURN checks in `test_stun_turn_phase5.py` and in
+  `test/exjabberd/jingle_omemo_test.exs` are skipped loudly there
+  and the same logic is covered in-process instead (synthetic
+  `{:udp, ...}` messages to the real server process +
+  `Allocation` with `server: self()`, asserting the exact Data
+  indication / ChannelData bytes the relay builds). TURN over TCP
+  *is* verified live (2/2 in the probe, plus the ExUnit TCP test).
+  Run `test_stun_turn_phase5.py` where UDP is allowed for the
+  full UDP wire proof.
+
 ## Not implemented
 
 Honest list — these were claimed by the old code/config and are not
@@ -305,11 +410,9 @@ there. Do not rely on them until they land:
 
 * **HTTP stack (remaining)**: no TLS HTTP listener (5443), no
   captcha endpoint, no ACME challenge handling, no HTTP/2.
-* **STUN/TURN** (5478), **MQTT** (1883).
-* **MAM, PubSub, Jingle, OMEMO, MIX, PEP**: MAM and PubSub are
-  implemented and verified (see above). Jingle, OMEMO, MIX and PEP
-  modules exist as partial implementations or stubs; none verified
-  over the wire.
+* **MQTT** (1883).
+* **MIX** (XEP-0369): the module exists as a partial implementation;
+  not verified over the wire.
 * **Clustering**: single node only.
 * **Auth backends other than Mnesia** (SQL, LDAP, JWT, anonymous,
   OAuth, external, PAM): stubs that return `false` / `not_implemented`.
@@ -354,6 +457,26 @@ there. Do not rely on them until they land:
 * `lib/exjabberd/mod/mam_query.ex` — XEP-0313 IQ handler
   (query with `with`/`start`/`end` + RSM, prefs get/set, MUC query).
 * `lib/exjabberd/mod/pubsub.ex` — XEP-0060 PubSub service
-  (Mnesia-backed nodes/items/subs/affs, IQ + owner handlers, disco).
+  (Mnesia-backed nodes/items/subs/affs, IQ + owner handlers, disco)
+  plus PEP namespacing (nodes under the owner's bare JID),
+  auto-create on first publish, and publish-options.
+* `lib/exjabberd/stun_turn.ex` — STUN/TURN codec (RFC 5389/5766):
+  encode/decode, XOR addresses, MESSAGE-INTEGRITY, FINGERPRINT,
+  long-term keys, stateless nonces, ChannelData framing.
+* `lib/exjabberd/stun_turn/server.ex` — STUN/TURN server (UDP 5478
+  + TCP): auth, allocations registry, TCP accept loop.
+* `lib/exjabberd/stun_turn/allocation.ex` — one TURN allocation:
+  relay UDP socket, permissions (300 s), channels (600 s), expiry.
+* `lib/exjabberd/stun_turn/tcp_connection.ex` — one TURN-over-TCP
+  connection (RFC 5766 §7.2 framing, dies with its allocations).
+* `lib/exjabberd/mod/jingle.ex` — XEP-0166 signaling-only session
+  tracking + XEP-0215 extdisco (STUN/TURN services + credentials).
+* `lib/exjabberd/mod/omemo.ex` — XEP-0384 legacy OMEMO nodes over
+  PEP (devicelist + per-device bundles, open/open, max_items 1).
+* `test/exjabberd/stun_turn_test.exs` — codec unit tests;
+  `test/exjabberd/jingle_omemo_test.exs` — live Jingle / OMEMO /
+  STUN / TURN integration tests (raw sockets + raw UDP/TCP);
+  `test_jingle_phase5.py` / `test_stun_turn_phase5.py` — the same
+  flows as repeatable raw-socket probes.
 * `lib/exjabberd/mnesia.ex` — Mnesia setup (schema + disc_copies).
 * `test/` — unit + live C2S integration tests.

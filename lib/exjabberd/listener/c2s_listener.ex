@@ -639,6 +639,106 @@ defmodule Exjabberd.Listener.C2S do
   end
 
   defp dispatch_iq(%{type: type} = stanza, state) when type in ["get", "set"] do
+    # An IQ addressed to *another* local user is routed to that
+    # user's session — the server must not answer for the peer (RFC
+    # 6120 §8.1.3: the recipient is the one who answers). Jingle
+    # IQ-sets pass through the signaling gate first (XEP-0166
+    # session tracking + errors); everything else goes straight to
+    # the router, which bounces to an offline peer with
+    # service-unavailable.
+    if peer_user_iq?(stanza, state) do
+      handle_peer_iq(stanza, state)
+    else
+      dispatch_local_iq(stanza, state)
+    end
+  end
+
+  defp dispatch_iq(stanza, state) do
+    # IQ result/error stanzas are replies: route them to the requester.
+    Exjabberd.Router.route(stanza)
+    {:ok, state}
+  end
+
+  # True when the IQ is addressed to a different local user (a full
+  # or bare JID with a local part, on this host, not the sender).
+  defp peer_user_iq?(stanza, state) do
+    case stanza.to do
+      %Jid{local: local, domain: domain} when is_binary(local) and local != "" ->
+        Exjabberd.Router.my_host?(domain) and
+          Jid.bare(stanza.to) != sender_bare(state)
+
+      bin when is_binary(bin) ->
+        case Jid.parse(bin) do
+          {:ok, %Jid{local: local, domain: domain}} when is_binary(local) and local != "" ->
+            Exjabberd.Router.my_host?(domain) and Jid.bare(bin) != sender_bare(state)
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp sender_bare(%{jid: %Jid{} = jid}), do: Jid.bare(jid)
+  defp sender_bare(_), do: nil
+
+  defp handle_peer_iq(stanza, state) do
+    cond do
+      stanza.type == "set" and jingle_iq?(stanza) ->
+        case Exjabberd.Mod.Jingle.intercept(stanza, state.host) do
+          :route ->
+            Exjabberd.Router.route(stanza)
+
+          {:error, condition, jingle_condition} ->
+            Exjabberd.C2S.send_xml(
+              state.c2s,
+              Codec.encode(
+                Exjabberd.Mod.Jingle.error_iq(stanza, state.host, condition, jingle_condition)
+              )
+            )
+        end
+
+      server_handled_peer_iq?(stanza) ->
+        dispatch_local_iq(stanza, state)
+
+      true ->
+        Exjabberd.Router.route(stanza)
+    end
+
+    {:ok, state}
+  end
+
+  defp jingle_iq?(stanza),
+    do: Exjabberd.Xmpp.Stanza.get_subtag(stanza, "urn:xmpp:jingle:1") != nil
+
+  # IQs the server itself must answer even though they are
+  # addressed to a local user: PEP (XEP-0163 — PubSub at a user's
+  # JID is a server service, not the client) and disco to a *bare*
+  # JID (the account's own features and PEP nodes; disco to a full
+  # JID belongs to that client). Without this, a peer's OMEMO
+  # fetch or bare-JID disco query would be delivered to the user's
+  # client socket and never answered by the server.
+  defp server_handled_peer_iq?(stanza) do
+    stanza.type in ["get", "set"] and
+      case Exjabberd.Iq.payload_xmlns(stanza) do
+        "http://jabber.org/protocol/pubsub" -> true
+        "http://jabber.org/protocol/pubsub#owner" -> true
+        "http://jabber.org/protocol/disco#info" -> bare_jid?(stanza.to)
+        "http://jabber.org/protocol/disco#items" -> bare_jid?(stanza.to)
+        _ -> false
+      end
+  end
+
+  defp bare_jid?(%Jid{local: local, resource: nil})
+       when is_binary(local) and local != "",
+       do: true
+
+  defp bare_jid?(bin) when is_binary(bin), do: not String.contains?(bin, "/")
+  defp bare_jid?(_), do: false
+
+  defp dispatch_local_iq(stanza, state) do
     # Server IQs (no `to`, or addressed to this host / the MUC service)
     # are answered here; IQs to another user are routed.
     to_domain =
@@ -682,12 +782,6 @@ defmodule Exjabberd.Listener.C2S do
       Exjabberd.Router.route(stanza)
       {:ok, state}
     end
-  end
-
-  defp dispatch_iq(stanza, state) do
-    # IQ result/error stanzas are replies: route them to the requester.
-    Exjabberd.Router.route(stanza)
-    {:ok, state}
   end
 
   defp error_condition(:bad_request), do: "bad-request"

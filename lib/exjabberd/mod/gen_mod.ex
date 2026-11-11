@@ -225,9 +225,11 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_last" => %{},
       "mod_mam" => %{default: "always", max_archive_size: 500},
       "mod_mqtt" => %{},
+      "mod_jingle" => %{},
       "mod_muc" => %{},
       "mod_muc_admin" => %{},
       "mod_offline" => %{},
+      "mod_omemo" => %{},
       "mod_ping" => %{},
       "mod_privacy" => %{},
       "mod_private" => %{},
@@ -269,9 +271,11 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_last"), do: Exjabberd.Mod.Last
   def module_for("mod_mam"), do: Exjabberd.Mod.Mam
   def module_for("mod_mqtt"), do: Exjabberd.Mod.Mqtt
+  def module_for("mod_jingle"), do: Exjabberd.Mod.Jingle
   def module_for("mod_muc"), do: Exjabberd.Mod.Muc
   def module_for("mod_muc_admin"), do: Exjabberd.Mod.MucAdmin
   def module_for("mod_offline"), do: Exjabberd.Mod.Offline
+  def module_for("mod_omemo"), do: Exjabberd.Mod.Omemo
   def module_for("mod_ping"), do: Exjabberd.Mod.Ping
   def module_for("mod_privacy"), do: Exjabberd.Mod.Privacy
   def module_for("mod_private"), do: Exjabberd.Mod.Private

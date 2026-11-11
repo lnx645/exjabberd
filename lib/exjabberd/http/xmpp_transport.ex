@@ -101,7 +101,9 @@ defmodule Exjabberd.Http.XmppTransport do
         handle_framing_open(unit, state)
 
       String.starts_with?(unit, "</stream:stream") or String.starts_with?(unit, "</open") ->
-        close_tag = if String.starts_with?(unit, "</open"), do: "</open>", else: "</stream:stream>"
+        close_tag =
+          if String.starts_with?(unit, "</open"), do: "</open>", else: "</stream:stream>"
+
         {:closed, state, [close_tag]}
 
       String.starts_with?(unit, "<starttls") ->
@@ -415,6 +417,93 @@ defmodule Exjabberd.Http.XmppTransport do
   end
 
   defp dispatch_iq(%{type: type} = stanza, state) when type in ["get", "set"] do
+    # Same rule as the TCP listener: an IQ to another local user is
+    # routed to that user (Jingle IQ-sets through the signaling
+    # gate first); only server- / self-addressed IQs are answered
+    # locally.
+    if peer_user_iq?(stanza, state) do
+      handle_peer_iq(stanza, state)
+    else
+      dispatch_local_iq(stanza, state)
+    end
+  end
+
+  defp dispatch_iq(stanza, state) do
+    Exjabberd.Router.route(stanza)
+    {:ok, state, []}
+  end
+
+  defp peer_user_iq?(stanza, state) do
+    case stanza.to do
+      %Jid{local: local, domain: domain} when is_binary(local) and local != "" ->
+        Exjabberd.Router.my_host?(domain) and
+          Jid.bare(stanza.to) != sender_bare(state)
+
+      bin when is_binary(bin) ->
+        case Jid.parse(bin) do
+          {:ok, %Jid{local: local, domain: domain}} when is_binary(local) and local != "" ->
+            Exjabberd.Router.my_host?(domain) and Jid.bare(bin) != sender_bare(state)
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp sender_bare(%{jid: %Jid{} = jid}), do: Jid.bare(jid)
+  defp sender_bare(_), do: nil
+
+  defp handle_peer_iq(stanza, state) do
+    cond do
+      stanza.type == "set" and
+          Exjabberd.Xmpp.Stanza.get_subtag(stanza, "urn:xmpp:jingle:1") != nil ->
+        case Exjabberd.Mod.Jingle.intercept(stanza, state.host) do
+          :route ->
+            Exjabberd.Router.route(stanza)
+
+          {:error, condition, jingle_condition} ->
+            Exjabberd.C2S.send_xml(
+              state.c2s,
+              Codec.encode(
+                Exjabberd.Mod.Jingle.error_iq(stanza, state.host, condition, jingle_condition)
+              )
+            )
+        end
+
+      server_handled_peer_iq?(stanza) ->
+        dispatch_local_iq(stanza, state)
+
+      true ->
+        Exjabberd.Router.route(stanza)
+    end
+
+    {:ok, state, []}
+  end
+
+  # Same rule as the TCP listener: PEP and bare-JID disco addressed
+  # to a local user are answered by the server, not the client.
+  defp server_handled_peer_iq?(stanza) do
+    stanza.type in ["get", "set"] and
+      case Exjabberd.Iq.payload_xmlns(stanza) do
+        "http://jabber.org/protocol/pubsub" -> true
+        "http://jabber.org/protocol/pubsub#owner" -> true
+        "http://jabber.org/protocol/disco#info" -> bare_jid?(stanza.to)
+        "http://jabber.org/protocol/disco#items" -> bare_jid?(stanza.to)
+        _ -> false
+      end
+  end
+
+  defp bare_jid?(%Jid{local: local, resource: nil})
+       when is_binary(local) and local != "",
+       do: true
+
+  defp bare_jid?(bin) when is_binary(bin), do: not String.contains?(bin, "/")
+  defp bare_jid?(_), do: false
+
+  defp dispatch_local_iq(stanza, state) do
     to_domain =
       case stanza.to do
         %Jid{domain: d} ->
@@ -454,11 +543,6 @@ defmodule Exjabberd.Http.XmppTransport do
     end
   end
 
-  defp dispatch_iq(stanza, state) do
-    Exjabberd.Router.route(stanza)
-    {:ok, state, []}
-  end
-
   defp error_condition(:bad_request), do: "bad-request"
   defp error_condition(:not_allowed), do: "not-allowed"
   defp error_condition(:forbidden), do: "forbidden"
@@ -474,8 +558,7 @@ defmodule Exjabberd.Http.XmppTransport do
         {:ok, state, []}
 
       {:error, _} ->
-        {:closed, state,
-         [Stream.error("invalid-xml", "Malformed stanza") <> "</stream:stream>"]}
+        {:closed, state, [Stream.error("invalid-xml", "Malformed stanza") <> "</stream:stream>"]}
     end
   end
 

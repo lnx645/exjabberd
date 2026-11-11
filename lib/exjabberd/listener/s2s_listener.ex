@@ -217,14 +217,15 @@ defmodule Exjabberd.Listener.S2S do
             "xmlns:db='jabber:server:dialback' from='#{host}' to='#{from}' " <>
             "id='#{stream_id}' version='1.0'>"
 
+        # STARTTLS is only offered before TLS (RFC 6120 §4.7):
+        # after the upgrade the feature must disappear, or a
+        # peer that re-reads features would request it again.
         features =
           "<stream:features>" <>
-            # STARTTLS is only offered before TLS (RFC 6120 §4.7):
-            # after the upgrade the feature must disappear, or a
-            # peer that re-reads features would request it again.
-            (if state.tls,
-               do: "",
-               else: "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>") <>
+            if(state.tls,
+              do: "",
+              else: "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+            ) <>
             "<dialback xmlns='urn:xmpp:features:dialback'/>" <>
             "</stream:features>"
 
@@ -391,6 +392,30 @@ defmodule Exjabberd.Listener.S2S do
           stanza.name == :iq and stanza.type in ["get", "set"] and service_addressed?(stanza) ->
             dispatch_service_iq(stanza, state)
 
+          # Federated Jingle to a local user: same signaling gate as
+          # local clients — track the session, route to the peer, or
+          # answer the error back over S2S. (Jingle to a remote user
+          # is not our business: it is routed onward untouched.)
+          stanza.name == :iq and stanza.type == "set" and jingle_to_local_user?(stanza) ->
+            case Exjabberd.Mod.Jingle.intercept(stanza, state.host) do
+              :route ->
+                Exjabberd.Router.route(stanza)
+
+              {:error, condition, jingle_condition} ->
+                Exjabberd.Router.route(
+                  Exjabberd.Mod.Jingle.error_iq(stanza, state.host, condition, jingle_condition)
+                )
+            end
+
+            {:ok, state}
+
+          # Federated PEP / bare-JID disco to a local user: same
+          # server-side service as for local clients — answer here
+          # and route the reply back over S2S.
+          stanza.name == :iq and stanza.type in ["get", "set"] and
+              pep_or_bare_disco_to_local_user?(stanza) ->
+            dispatch_service_iq(stanza, state)
+
           true ->
             Exjabberd.Router.route(stanza)
             {:ok, state}
@@ -401,6 +426,45 @@ defmodule Exjabberd.Listener.S2S do
         {:closed, state}
     end
   end
+
+  defp jingle_to_local_user?(stanza) do
+    Exjabberd.Xmpp.Stanza.get_subtag(stanza, "urn:xmpp:jingle:1") != nil and
+      case stanza.to do
+        %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+        when is_binary(local) and local != "" ->
+          Exjabberd.Router.my_host?(domain)
+
+        _ ->
+          false
+      end
+  end
+
+  defp pep_or_bare_disco_to_local_user?(stanza) do
+    local_user? =
+      case stanza.to do
+        %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+        when is_binary(local) and local != "" ->
+          Exjabberd.Router.my_host?(domain)
+
+        _ ->
+          false
+      end
+
+    local_user? and
+      case Exjabberd.Iq.payload_xmlns(stanza) do
+        "http://jabber.org/protocol/pubsub" -> true
+        "http://jabber.org/protocol/pubsub#owner" -> true
+        "http://jabber.org/protocol/disco#info" -> bare_jid?(stanza.to)
+        "http://jabber.org/protocol/disco#items" -> bare_jid?(stanza.to)
+        _ -> false
+      end
+  end
+
+  defp bare_jid?(%Exjabberd.Xmpp.Jid{local: local, resource: nil})
+       when is_binary(local) and local != "",
+       do: true
+
+  defp bare_jid?(_), do: false
 
   # An IQ addressed to the server domain itself (no `to`, or `to` is
   # the bare domain) is answered by the local service; the answer is

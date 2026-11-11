@@ -68,7 +68,9 @@ listen:
 ##         listener yet, and no captcha endpoint.
 ##   5280  HTTP: /admin, /.well-known/acme-challenge — /admin exists
 ##         now; ACME challenge handling does not.
-##   5478  STUN/TURN over UDP — not implemented.
+##   5478  STUN/TURN over UDP (+TCP) — implemented in Fase 5
+##         (Exjabberd.StunTurn.Server, from the `turn:` section
+##         above, not from `listen:`).
 ##   1883  MQTT — not implemented.
     module: mod_mqtt
     backlog: 1000
@@ -109,6 +111,35 @@ http:
   upload_url_base: ""
   bosh_wait: 60
   bosh_inactivity: 60
+
+## STUN/TURN (XEP-0215, RFC 5389/5766) — Fase 5. The server listens
+## on `port` (UDP + TCP when `tcp: true`); it is NOT a `listen:`
+## entry because it speaks STUN/TURN, not XMPP. `host` is the
+## address advertised to clients (XEP-0215) and used as the TURN
+## realm; `shared_secret` signs the ephemeral TURN credentials
+## (username "<expiry>:<bare JID>", password
+## Base64(HMAC-SHA1(secret, username))) and authenticates TURN
+## allocations (RFC 5389 long-term credential mechanism). The value
+## below is a DEV placeholder — change it in production, and NEVER
+## commit a production secret. When empty, the server generates a
+## random ephemeral secret per boot (TURN credentials then stop
+## working after a restart, same as the dialback secret).
+turn:
+  enabled: true
+  port: 5478
+  host: "localhost"
+  realm: "localhost"
+  shared_secret: "dev-only-turn-secret-change-me"
+  tcp: true
+  default_lifetime: 600
+  max_lifetime: 3600
+  max_allocations: 500
+  # Relay socket binds 0.0.0.0 and advertises the resolved `host`
+  # above (127.0.0.1 here). On a public server set `relay_ip` to
+  # the public IP (binds + advertises it), or `advertise_ip` to
+  # advertise a different address than the bind address.
+  # relay_ip: "203.0.113.10"
+  # advertise_ip: "203.0.113.10"
 
 acl:
   local:
@@ -222,7 +253,9 @@ modules:
     default: always
     # Maximum archived messages kept per user (oldest dropped first).
     max_archive_size: 500
+  mod_jingle: {}
   mod_mqtt: {}
+  mod_omemo: {}
   mod_muc:
     access:
       - allow

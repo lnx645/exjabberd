@@ -119,6 +119,11 @@ defmodule Exjabberd.Iq do
     end
   end
 
+  @doc "Namespace of an IQ's payload element (`\"\"` when there is none)."
+  @spec payload_xmlns(map()) :: binary()
+  def payload_xmlns(%{payload: payload}), do: get_xmlns(payload)
+  def payload_xmlns(_), do: ""
+
   # The payload is a list of decoded element maps
   # (%{name, attrs, children}); the namespace lives in attrs.
   defp get_xmlns(payload) when is_list(payload) do

@@ -77,9 +77,16 @@ defmodule Exjabberd.Application do
     # retries — see Exjabberd.S2S.Dialback).
     ensure_dialback_secret()
 
+    # TURN needs a shared secret too (same pattern: configured, or a
+    # random ephemeral one for this boot).
+    ensure_turn_secret()
+
     # Listeners from the config's `listen:` list (C2S plain/TLS and
     # S2S inbound). No `listen:` entries → plain C2S on 5222.
     start_listeners()
+
+    # STUN/TURN on its own UDP (+TCP) port, from the `turn:` section.
+    start_stun_turn()
 
     # Start the configured modules for every host.
     for host <- Exjabberd.Config.hosts() do
@@ -104,6 +111,38 @@ defmodule Exjabberd.Application do
         )
 
         :ok
+    end
+  end
+
+  defp ensure_turn_secret do
+    case Exjabberd.Config.turn_secret() do
+      secret when is_binary(secret) and secret != "" ->
+        :ok
+
+      _ ->
+        generated = :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
+        :ok = Exjabberd.Config.set(:global, :turn_shared_secret, generated)
+
+        Logger.warning(
+          "turn.shared_secret is not configured; generated an ephemeral secret for this boot " <>
+            "(set turn.shared_secret in exjabberd.yml for a stable one — TURN credentials issued before a restart stop working otherwise)"
+        )
+
+        :ok
+    end
+  end
+
+  defp start_stun_turn do
+    turn = Exjabberd.Config.turn()
+
+    if turn["enabled"] == false or turn[:enabled] == false do
+      Logger.info("STUN/TURN disabled by configuration (turn.enabled: false)")
+      :ok
+    else
+      start_listener(
+        {Exjabberd.StunTurn.Server, [name: Exjabberd.StunTurn.Server]},
+        "STUN/TURN on #{turn["port"] || turn[:port] || 5478} (UDP + TCP)"
+      )
     end
   end
 

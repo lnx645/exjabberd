@@ -105,6 +105,14 @@ defmodule Exjabberd.Config do
   @spec s2s_host_overrides() :: map()
   def s2s_host_overrides, do: get("global", :s2s_host_overrides, %{})
 
+  @doc "Configured STUN/TURN section (`turn:` in exjabberd.yml), or `%{}`."
+  @spec turn() :: map()
+  def turn, do: get(:global, :turn, %{})
+
+  @doc "Configured TURN shared secret (`turn.shared_secret`), or nil when unconfigured."
+  @spec turn_secret() :: binary() | nil
+  def turn_secret, do: get(:global, :turn_shared_secret, nil)
+
   defp normalize_key(k) when is_binary(k), do: String.to_atom(k)
   defp normalize_key(k) when is_atom(k), do: k
 
@@ -217,6 +225,29 @@ defmodule Exjabberd.Config do
         _ -> %{}
       end
 
+    # STUN/TURN (`turn:`): port/realm/lifetimes plus the shared
+    # secret that signs ephemeral TURN credentials (XEP-0215) and
+    # authenticates allocations (RFC 5389 long-term mechanism).
+    # The secret may also be given top-level as
+    # `turn_shared_secret:`; the nested key wins.
+    turn_config =
+      case Map.get(data, "turn", Map.get(data, :turn, %{})) do
+        map when is_map(map) -> map
+        _ -> %{}
+      end
+
+    turn_shared_secret =
+      case Map.get(turn_config, "shared_secret", Map.get(turn_config, :shared_secret)) do
+        secret when is_binary(secret) and secret != "" ->
+          secret
+
+        _ ->
+          case Map.get(data, "turn_shared_secret", Map.get(data, :turn_shared_secret)) do
+            secret when is_binary(secret) and secret != "" -> secret
+            _ -> nil
+          end
+      end
+
     # The configured `hosts:` list is authoritative: the initial
     # state carries a placeholder "localhost" entry, which must go
     # when the file names other hosts — otherwise `hosts()` would
@@ -243,6 +274,8 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
+      |> put_in([:global, :turn], turn_config)
+      |> put_in([:global, :turn_shared_secret], turn_shared_secret)
       |> put_in([:global, :http], http_config)
 
     # Validate via Options like ejabberd does

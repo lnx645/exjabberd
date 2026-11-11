@@ -182,6 +182,75 @@ defmodule Exjabberd.Mod.PubSub do
     |> Enum.sort()
   end
 
+  @doc """
+  The PEP owner an IQ is addressed to: the bare JID when `to` is a
+  local user's bare/full JID (XEP-0163), or `nil` for the PubSub
+  service itself, the server, or a foreign address. PEP nodes live
+  under that user's JID, not under the service.
+  """
+  @spec pep_owner(map(), binary()) :: binary() | nil
+  def pep_owner(iq, host) do
+    case iq.to do
+      %Jid{local: local, domain: domain}
+      when is_binary(local) and local != "" and domain == host ->
+        Jid.bare(iq.to)
+
+      bin when is_binary(bin) ->
+        case Jid.parse(bin) do
+          {:ok, %Jid{local: local, domain: domain}}
+          when is_binary(local) and local != "" and domain == host ->
+            Jid.bare(bin)
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc "Internal storage key for a PEP node: `<owner bare JID>/<node>`."
+  @spec pep_node_key(binary(), binary()) :: binary()
+  def pep_node_key(owner, node), do: owner <> "/" <> node
+
+  @doc "Resolve a wire node name to its storage key (PEP or service context)."
+  @spec resolve_node(binary() | nil, binary()) :: binary()
+  def resolve_node(nil, node), do: node
+  def resolve_node(owner, node), do: pep_node_key(owner, node)
+
+  @doc "PEP nodes of one user (wire names, sorted) — for disco#items on the bare JID."
+  @spec list_pep_nodes(binary(), binary()) :: [binary()]
+  def list_pep_nodes(host, owner) do
+    prefix = owner <> "/"
+
+    list_nodes(host)
+    |> Enum.filter(&String.starts_with?(&1, prefix))
+    |> Enum.map(&String.replace_prefix(&1, prefix, ""))
+    |> Enum.sort()
+  end
+
+  @doc "Disco#info answer for one PEP node, or `{:error, :not_found}`."
+  @spec pep_node_disco_info(binary(), binary(), binary()) ::
+          {:ok, {[binary()], [map()]}} | {:error, :not_found}
+  def pep_node_disco_info(host, owner, node),
+    do: node_disco_info(host, pep_node_key(owner, node))
+
+  @doc """
+  Nodes of the PubSub service itself. PEP nodes (stored as
+  `<owner bare JID>/<node>`) belong to their user and are never
+  listed on the service.
+  """
+  @spec list_service_nodes(binary()) :: [binary()]
+  def list_service_nodes(host) do
+    Enum.reject(list_nodes(host), fn node ->
+      case String.split(node, "/", parts: 2) do
+        [owner, _rest] -> String.contains?(owner, "@")
+        _ -> false
+      end
+    end)
+  end
+
   # --- node lifecycle ---
 
   @type node_opts :: keyword()
@@ -226,8 +295,10 @@ defmodule Exjabberd.Mod.PubSub do
 
   @doc "Delete node (like `mod_pubsub:delete_node/2`). Notifies subscribers."
   @spec delete_node(binary(), binary()) :: :ok | {:error, term()}
-  def delete_node(host, node) do
+  def delete_node(host, node, opts \\ []) do
     ensure_tables()
+    from = Keyword.get(opts, :from, service_jid(host))
+    notify_node = Keyword.get(opts, :notify_node, node)
 
     if get_node(host, node) == nil do
       {:error, :not_found}
@@ -239,11 +310,16 @@ defmodule Exjabberd.Mod.PubSub do
       match_delete(@subs_table, {host, node, :_})
 
       Enum.each(subscribers, fn sub_jid ->
-        notify(sub_jid, host, %{
-          name: "delete",
-          attrs: %{"node" => node},
-          children: []
-        })
+        notify(
+          sub_jid,
+          host,
+          %{
+            name: "delete",
+            attrs: %{"node" => notify_node},
+            children: []
+          },
+          from: from
+        )
       end)
 
       :ok
@@ -375,11 +451,20 @@ defmodule Exjabberd.Mod.PubSub do
 
   # --- items ---
 
-  @doc "Publish to node and notify subscribers (like `mod_pubsub:publish_item`)."
+  @doc """
+  Publish to node and notify subscribers (like `mod_pubsub:publish_item`).
+
+  Opts: `:publisher` (checked against the publish model),
+  `:from` (the notification sender — the service JID, or the
+  owner's bare JID for PEP, XEP-0163) and `:notify_node` (the node
+  name subscribers see — the wire name, not the internal PEP key).
+  """
   @spec publish(binary(), binary(), binary(), term(), keyword()) :: :ok | {:error, term()}
   def publish(host, node, item_id, payload, opts \\ []) do
     ensure_tables()
     publisher = Keyword.get(opts, :publisher)
+    from = Keyword.get(opts, :from, service_jid(host))
+    notify_node = Keyword.get(opts, :notify_node, node)
 
     case get_node(host, node) do
       nil ->
@@ -403,7 +488,7 @@ defmodule Exjabberd.Mod.PubSub do
 
           if meta.deliver_payloads do
             Enum.each(get_subscribers(host, node), fn sub_jid ->
-              notify_items(sub_jid, host, node, [item_element(item)])
+              notify_items(sub_jid, host, notify_node, [item_element(item)], from: from)
             end)
           end
 
@@ -419,6 +504,8 @@ defmodule Exjabberd.Mod.PubSub do
   def retract(host, node, item_id, opts \\ []) do
     ensure_tables()
     publisher = Keyword.get(opts, :publisher)
+    from = Keyword.get(opts, :from, service_jid(host))
+    notify_node = Keyword.get(opts, :notify_node, node)
 
     case get_node(host, node) do
       nil ->
@@ -429,11 +516,16 @@ defmodule Exjabberd.Mod.PubSub do
           delete(@items_table, {host, node, item_id})
 
           Enum.each(get_subscribers(host, node), fn sub_jid ->
-            notify(sub_jid, host, %{
-              name: "items",
-              attrs: %{"node" => node},
-              children: [%{name: "retract", attrs: %{"id" => item_id}, children: []}]
-            })
+            notify(
+              sub_jid,
+              host,
+              %{
+                name: "items",
+                attrs: %{"node" => notify_node},
+                children: [%{name: "retract", attrs: %{"id" => item_id}, children: []}]
+              },
+              from: from
+            )
           end)
 
           :ok
@@ -444,9 +536,11 @@ defmodule Exjabberd.Mod.PubSub do
   end
 
   @doc "Delete all items of a node and notify subscribers (owner `<purge/>`)."
-  @spec purge(binary(), binary()) :: :ok | {:error, term()}
-  def purge(host, node) do
+  @spec purge(binary(), binary(), keyword()) :: :ok | {:error, term()}
+  def purge(host, node, opts \\ []) do
     ensure_tables()
+    from = Keyword.get(opts, :from, service_jid(host))
+    notify_node = Keyword.get(opts, :notify_node, node)
 
     if get_node(host, node) == nil do
       {:error, :not_found}
@@ -454,7 +548,9 @@ defmodule Exjabberd.Mod.PubSub do
       match_delete(@items_table, {host, node, :_})
 
       Enum.each(get_subscribers(host, node), fn sub_jid ->
-        notify(sub_jid, host, %{name: "purge", attrs: %{"node" => node}, children: []})
+        notify(sub_jid, host, %{name: "purge", attrs: %{"node" => notify_node}, children: []},
+          from: from
+        )
       end)
 
       :ok
@@ -507,21 +603,25 @@ defmodule Exjabberd.Mod.PubSub do
     do: {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
   defp dispatch_pubsub(%{type: "set"} = iq, host, pubsub_el) do
+    pep = pep_owner(iq, host)
+
     case first_action(pubsub_el) do
-      {"create", el} -> handle_create(iq, host, el)
-      {"subscribe", el} -> handle_subscribe(iq, host, el)
-      {"unsubscribe", el} -> handle_unsubscribe(iq, host, el)
-      {"publish", el} -> handle_publish(iq, host, el)
-      {"retract", el} -> handle_retract(iq, host, el)
+      {"create", el} -> handle_create(iq, host, el, pep)
+      {"subscribe", el} -> handle_subscribe(iq, host, el, pep)
+      {"unsubscribe", el} -> handle_unsubscribe(iq, host, el, pep)
+      {"publish", el} -> handle_publish(iq, host, el, pep, pubsub_el)
+      {"retract", el} -> handle_retract(iq, host, el, pep)
       _ -> {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
     end
   end
 
   defp dispatch_pubsub(%{type: "get"} = iq, host, pubsub_el) do
+    pep = pep_owner(iq, host)
+
     case first_action(pubsub_el) do
-      {"items", el} -> handle_get_items(iq, host, el, pubsub_el)
-      {"subscriptions", _el} -> handle_get_subscriptions(iq, host)
-      {"affiliations", _el} -> handle_get_affiliations(iq, host)
+      {"items", el} -> handle_get_items(iq, host, el, pubsub_el, pep)
+      {"subscriptions", _el} -> handle_get_subscriptions(iq, host, pep)
+      {"affiliations", _el} -> handle_get_affiliations(iq, host, pep)
       _ -> {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
     end
   end
@@ -535,7 +635,7 @@ defmodule Exjabberd.Mod.PubSub do
 
   # --- set actions ---
 
-  defp handle_create(iq, host, el) do
+  defp handle_create(iq, host, el, pep) do
     node = el.attrs["node"]
     owner = requester_bare(iq)
 
@@ -543,10 +643,23 @@ defmodule Exjabberd.Mod.PubSub do
       is_nil(node) or node == "" ->
         {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
-      true ->
-        opts = [owner: owner] ++ config_from_form(Stanza.child(el.children, "configure"))
+      # A PEP node belongs to its owner; nobody else may create it.
+      pep != nil and owner != pep ->
+        {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
 
-        case create_node(host, node, opts) do
+      true ->
+        # OMEMO nodes get their spec config unless the client
+        # configures them explicitly (XEP-0384: open/open, 1 item).
+        base =
+          if pep != nil and Exjabberd.Mod.Omemo.omemo_node?(node),
+            do: Exjabberd.Mod.Omemo.node_config(node),
+            else: []
+
+        opts =
+          [owner: owner] ++
+            Keyword.merge(base, config_from_form(Stanza.child(el.children, "configure")))
+
+        case create_node(host, resolve_node(pep, node), opts) do
           :ok ->
             {:ok, %{iq | type: "result", payload: []}}
 
@@ -559,7 +672,7 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_subscribe(iq, host, el) do
+  defp handle_subscribe(iq, host, el, pep) do
     node = el.attrs["node"]
     jid = el.attrs["jid"] || requester_bare(iq)
 
@@ -568,7 +681,7 @@ defmodule Exjabberd.Mod.PubSub do
         {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
       true ->
-        case subscribe(host, node, jid) do
+        case subscribe(host, resolve_node(pep, node), jid) do
           {:ok, state, subid} ->
             sub = %{
               name: "subscription",
@@ -592,19 +705,19 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_unsubscribe(iq, host, el) do
+  defp handle_unsubscribe(iq, host, el, pep) do
     node = el.attrs["node"]
     jid = el.attrs["jid"] || requester_bare(iq)
 
     if is_nil(node) or node == "" do
       {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
     else
-      :ok = unsubscribe(host, node, jid)
+      :ok = unsubscribe(host, resolve_node(pep, node), jid)
       {:ok, %{iq | type: "result", payload: []}}
     end
   end
 
-  defp handle_publish(iq, host, el) do
+  defp handle_publish(iq, host, el, pep, pubsub_el) do
     node = el.attrs["node"]
     publisher = requester_bare(iq)
 
@@ -613,36 +726,105 @@ defmodule Exjabberd.Mod.PubSub do
         {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
       item_el ->
-        item_id = item_el.attrs["id"]
+        cond do
+          is_nil(node) or node == "" ->
+            {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
-        case publish(host, node, item_id, item_el.children, publisher: publisher) do
-          :ok ->
-            {:ok, %{iq | type: "result", payload: []}}
-
-          {:error, :not_found} ->
-            {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
-
-          {:error, :forbidden} ->
+          # PEP is personal: only the owner publishes to their own
+          # nodes (XEP-0163), whatever the publish model says.
+          pep != nil and publisher != pep ->
             {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
+
+          true ->
+            item_id = item_el.attrs["id"]
+
+            with :ok <- ensure_pep_node(host, pep, node, pubsub_el) do
+              publish_opts = [
+                publisher: publisher,
+                from: pep || service_jid(host),
+                notify_node: node
+              ]
+
+              case publish(host, resolve_node(pep, node), item_id, item_el.children, publish_opts) do
+                :ok ->
+                  {:ok, %{iq | type: "result", payload: []}}
+
+                {:error, :not_found} ->
+                  {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
+
+                {:error, :forbidden} ->
+                  {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
+              end
+            else
+              {:error, _} ->
+                {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+            end
         end
     end
   end
 
-  defp handle_retract(iq, host, el) do
+  # Auto-create a missing PEP node on first publish (XEP-0163 §4):
+  # the node configuration comes from the publish-options, else
+  # from the OMEMO spec for OMEMO nodes, else from the PEP
+  # defaults. A missing node in the service context is a plain
+  # `item-not-found` — PubSub does not auto-create there.
+  defp ensure_pep_node(_host, nil, _node, _pubsub_el), do: :ok
+
+  defp ensure_pep_node(host, pep, node, pubsub_el) do
+    key = pep_node_key(pep, node)
+
+    if get_node(host, key) != nil do
+      :ok
+    else
+      base =
+        if Exjabberd.Mod.Omemo.omemo_node?(node),
+          do: Exjabberd.Mod.Omemo.node_config(node),
+          else: [access_model: "presence", publish_model: "publishers"]
+
+      opts = [owner: pep] ++ Keyword.merge(base, publish_options(pubsub_el))
+
+      case create_node(host, key, opts) do
+        :ok -> :ok
+        # Lost a race with another publish: the node exists now.
+        {:error, :conflict} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  # `<publish-options/>` (XEP-0060 §7.1.5) next to `<publish/>`.
+  defp publish_options(pubsub_el) do
+    case Stanza.child(pubsub_el.children, "publish-options") do
+      nil -> []
+      el -> config_from_form(el)
+    end
+  end
+
+  defp handle_retract(iq, host, el, pep) do
     node = el.attrs["node"]
     publisher = requester_bare(iq)
 
     case Stanza.child(el.children, "item") do
       %{attrs: %{"id" => item_id}} ->
-        case retract(host, node, item_id, publisher: publisher) do
-          :ok ->
-            {:ok, %{iq | type: "result", payload: []}}
-
-          {:error, :not_found} ->
-            {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
-
-          {:error, :forbidden} ->
+        cond do
+          pep != nil and publisher != pep ->
             {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
+
+          true ->
+            case retract(host, resolve_node(pep, node), item_id,
+                   publisher: publisher,
+                   from: pep || service_jid(host),
+                   notify_node: node
+                 ) do
+              :ok ->
+                {:ok, %{iq | type: "result", payload: []}}
+
+              {:error, :not_found} ->
+                {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
+
+              {:error, :forbidden} ->
+                {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
+            end
         end
 
       _ ->
@@ -652,13 +834,13 @@ defmodule Exjabberd.Mod.PubSub do
 
   # --- get actions ---
 
-  defp handle_get_items(iq, host, el, pubsub_el) do
+  defp handle_get_items(iq, host, el, pubsub_el, pep) do
     node = el.attrs["node"]
     # XEP-0060 puts the RSM <set/> next to <items/>, as a child of
     # <pubsub/> — not inside <items/>.
     max_items = parse_int(el.attrs["max_items"]) || parse_rsm_max(pubsub_el)
 
-    case get_items(host, node, max_items: max_items || @default_max_items) do
+    case get_items(host, resolve_node(pep, node), max_items: max_items || @default_max_items) do
       {:ok, items, _info} ->
         items_el = %{
           name: "items",
@@ -673,11 +855,14 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_get_subscriptions(iq, host) do
+  defp handle_get_subscriptions(iq, host, pep) do
     jid = requester_bare(iq)
 
     subs =
-      Enum.map(subscriptions_of(host, jid), fn {node, sub} ->
+      subscriptions_of(host, jid)
+      |> Enum.map(fn {node, sub} -> {present_node(node, pep), sub} end)
+      |> Enum.filter(fn {node, _sub} -> node != nil end)
+      |> Enum.map(fn {node, sub} ->
         %{
           name: "subscription",
           attrs: %{
@@ -698,11 +883,14 @@ defmodule Exjabberd.Mod.PubSub do
      }}
   end
 
-  defp handle_get_affiliations(iq, host) do
+  defp handle_get_affiliations(iq, host, pep) do
     jid = requester_bare(iq)
 
     affs =
-      Enum.map(affiliations_of(host, jid), fn {node, aff} ->
+      affiliations_of(host, jid)
+      |> Enum.map(fn {node, aff} -> {present_node(node, pep), aff} end)
+      |> Enum.filter(fn {node, _aff} -> node != nil end)
+      |> Enum.map(fn {node, aff} ->
         %{
           name: "affiliation",
           attrs: %{"node" => node, "jid" => jid, "affiliation" => to_string(aff)},
@@ -716,6 +904,19 @@ defmodule Exjabberd.Mod.PubSub do
        | type: "result",
          payload: [wrap_pubsub([%{name: "affiliations", attrs: %{}, children: affs}])]
      }}
+  end
+
+  # Wire name for a stored node in this context: in a PEP context
+  # only the owner's own nodes are shown, with the `owner/` prefix
+  # stripped; in the service context the stored name is the wire
+  # name. Returns `nil` for a node that does not belong here.
+  defp present_node(node, nil), do: node
+
+  defp present_node(node, pep) do
+    case String.split(node, "/", parts: 2) do
+      [^pep, rest] -> rest
+      _ -> nil
+    end
   end
 
   # --- owner IQ handler ---
@@ -733,29 +934,33 @@ defmodule Exjabberd.Mod.PubSub do
     do: {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
   defp dispatch_owner(%{type: "get"} = iq, host, pubsub_el) do
+    pep = pep_owner(iq, host)
+
     case first_action(pubsub_el) do
-      {"configure", el} -> handle_owner_get_configure(iq, host, el)
-      {"subscriptions", el} -> handle_owner_get_subscriptions(iq, host, el)
-      {"affiliations", el} -> handle_owner_get_affiliations(iq, host, el)
+      {"configure", el} -> handle_owner_get_configure(iq, host, el, pep)
+      {"subscriptions", el} -> handle_owner_get_subscriptions(iq, host, el, pep)
+      {"affiliations", el} -> handle_owner_get_affiliations(iq, host, el, pep)
       _ -> {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
     end
   end
 
   defp dispatch_owner(%{type: "set"} = iq, host, pubsub_el) do
+    pep = pep_owner(iq, host)
+
     case first_action(pubsub_el) do
-      {"configure", el} -> handle_owner_set_configure(iq, host, el)
-      {"delete", el} -> handle_owner_delete(iq, host, el)
-      {"purge", el} -> handle_owner_purge(iq, host, el)
-      {"subscriptions", el} -> handle_owner_set_subscriptions(iq, host, el)
-      {"affiliations", el} -> handle_owner_set_affiliations(iq, host, el)
+      {"configure", el} -> handle_owner_set_configure(iq, host, el, pep)
+      {"delete", el} -> handle_owner_delete(iq, host, el, pep)
+      {"purge", el} -> handle_owner_purge(iq, host, el, pep)
+      {"subscriptions", el} -> handle_owner_set_subscriptions(iq, host, el, pep)
+      {"affiliations", el} -> handle_owner_set_affiliations(iq, host, el, pep)
       _ -> {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
     end
   end
 
-  defp handle_owner_get_configure(iq, host, el) do
+  defp handle_owner_get_configure(iq, host, el, pep) do
     node = el.attrs["node"]
 
-    case get_node(host, node) do
+    case get_node(host, resolve_node(pep, node)) do
       nil ->
         {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
 
@@ -764,17 +969,17 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_owner_set_configure(iq, host, el) do
+  defp handle_owner_set_configure(iq, host, el, pep) do
     node = el.attrs["node"]
 
-    case get_node(host, node) do
+    case get_node(host, resolve_node(pep, node)) do
       nil ->
         {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
 
       _meta ->
         config = config_from_form(Stanza.child(el.children, "x"))
 
-        case set_node_config(host, node, Map.new(config)) do
+        case set_node_config(host, resolve_node(pep, node), Map.new(config)) do
           :ok ->
             {:ok, %{iq | type: "result", payload: []}}
 
@@ -784,33 +989,40 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_owner_delete(iq, host, el) do
+  defp handle_owner_delete(iq, host, el, pep) do
     node = el.attrs["node"]
 
-    case delete_node(host, node) do
+    case delete_node(host, resolve_node(pep, node),
+           from: pep || service_jid(host),
+           notify_node: node
+         ) do
       :ok -> {:ok, %{iq | type: "result", payload: []}}
       {:error, :not_found} -> {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     end
   end
 
-  defp handle_owner_purge(iq, host, el) do
+  defp handle_owner_purge(iq, host, el, pep) do
     node = el.attrs["node"]
 
-    case purge(host, node) do
+    case purge(host, resolve_node(pep, node),
+           from: pep || service_jid(host),
+           notify_node: node
+         ) do
       :ok -> {:ok, %{iq | type: "result", payload: []}}
       {:error, :not_found} -> {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     end
   end
 
-  defp handle_owner_get_subscriptions(iq, host, el) do
+  defp handle_owner_get_subscriptions(iq, host, el, pep) do
     node = el.attrs["node"]
+    key = resolve_node(pep, node)
 
-    if get_node(host, node) == nil do
+    if get_node(host, key) == nil do
       {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     else
       subs =
         all(@subs_table)
-        |> Enum.filter(fn {{h, n, _j}, _} -> h == host and n == node end)
+        |> Enum.filter(fn {{h, n, _j}, _} -> h == host and n == key end)
         |> Enum.map(fn {{_h, _n, jid}, sub} ->
           %{
             name: "subscription",
@@ -835,15 +1047,16 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_owner_get_affiliations(iq, host, el) do
+  defp handle_owner_get_affiliations(iq, host, el, pep) do
     node = el.attrs["node"]
+    key = resolve_node(pep, node)
 
-    if get_node(host, node) == nil do
+    if get_node(host, key) == nil do
       {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     else
       affs =
         all(@affs_table)
-        |> Enum.filter(fn {{h, n, _j}, _} -> h == host and n == node end)
+        |> Enum.filter(fn {{h, n, _j}, _} -> h == host and n == key end)
         |> Enum.map(fn {{_h, _n, jid}, aff} ->
           %{
             name: "affiliation",
@@ -863,17 +1076,18 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_owner_set_subscriptions(iq, host, el) do
+  defp handle_owner_set_subscriptions(iq, host, el, pep) do
     node = el.attrs["node"]
+    key = resolve_node(pep, node)
 
-    if get_node(host, node) == nil do
+    if get_node(host, key) == nil do
       {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     else
       Enum.each(el.children, fn
         %{name: "subscription", attrs: %{"jid" => jid, "subscription" => state}} ->
           case state do
-            "none" -> unsubscribe(host, node, jid)
-            "subscribed" -> subscribe(host, node, jid)
+            "none" -> unsubscribe(host, key, jid)
+            "subscribed" -> subscribe(host, key, jid)
             _ -> :ok
           end
 
@@ -885,10 +1099,11 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  defp handle_owner_set_affiliations(iq, host, el) do
+  defp handle_owner_set_affiliations(iq, host, el, pep) do
     node = el.attrs["node"]
+    key = resolve_node(pep, node)
 
-    if get_node(host, node) == nil do
+    if get_node(host, key) == nil do
       {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
     else
       Enum.each(el.children, fn
@@ -896,7 +1111,7 @@ defmodule Exjabberd.Mod.PubSub do
           aff_atom = String.to_atom(aff)
 
           if aff_atom in [:owner, :publisher, :member, :outcast, :none] do
-            set_affiliation(host, node, jid, aff_atom)
+            set_affiliation(host, key, jid, aff_atom)
           end
 
         _ ->
@@ -935,7 +1150,9 @@ defmodule Exjabberd.Mod.PubSub do
             [publish_model: v]
 
           {"pubsub#max_items", v} when is_binary(v) ->
-            [max_items: parse_int(v) || @default_max_items]
+            # XEP-0060 publish-options: "max" means unlimited; the
+            # store caps it at a large number instead.
+            [max_items: if(v == "max", do: 100_000, else: parse_int(v) || @default_max_items)]
 
           {"pubsub#persist_items", v} when is_binary(v) ->
             [persist_items: v in ["1", "true"]]
@@ -992,19 +1209,26 @@ defmodule Exjabberd.Mod.PubSub do
 
   # --- notifications ---
 
-  defp notify_items(to_jid, host, node, item_elements) do
-    notify(to_jid, host, %{
-      name: "items",
-      attrs: %{"node" => node},
-      children: item_elements
-    })
+  defp notify_items(to_jid, host, node, item_elements, opts) do
+    notify(
+      to_jid,
+      host,
+      %{
+        name: "items",
+        attrs: %{"node" => node},
+        children: item_elements
+      },
+      opts
+    )
   end
 
-  defp notify(to_jid, host, event_child) do
+  defp notify(to_jid, host, event_child, opts) do
+    from = Keyword.get(opts, :from, service_jid(host))
+
     stanza =
       Stanza.new(:message,
         type: "headline",
-        from: service_jid(host),
+        from: from,
         to: to_jid,
         payload: [
           %{
@@ -1373,6 +1597,25 @@ defmodule Exjabberd.Mod.Disco do
           # The PubSub service answers with its own identity + features.
           Exjabberd.Mod.PubSub.service_disco_info(host)
 
+        %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+        when is_binary(local) and local != "" and domain == host and not is_nil(node) ->
+          # Disco#info on one PEP node of a local user (XEP-0163).
+          case Exjabberd.Mod.PubSub.pep_node_disco_info(
+                 host,
+                 Exjabberd.Xmpp.Jid.bare(iq.to),
+                 node
+               ) do
+            {:ok, {f, i}} -> {f, i}
+            {:error, :not_found} -> throw({:disco_error, iq})
+          end
+
+        %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+        when is_binary(local) and local != "" and domain == host ->
+          # Disco#info on a local user's bare JID (XEP-0163): the
+          # account advertises PubSub + OMEMO (XEP-0384) so contacts
+          # know the device list / bundles can be fetched here.
+          {acc.features ++ ["urn:xmpp:omemo:0"], acc.identities}
+
         _ ->
           {acc.features, acc.identities}
       end
@@ -1409,8 +1652,9 @@ defmodule Exjabberd.Mod.Disco do
             ]
 
         %Exjabberd.Xmpp.Jid{domain: "pubsub." <> _, local: nil} ->
-          # The PubSub service lists its nodes.
-          Enum.map(Exjabberd.Mod.PubSub.list_nodes(host), fn node ->
+          # The PubSub service lists its nodes (PEP nodes belong to
+          # their users and are listed on the bare JID instead).
+          Enum.map(Exjabberd.Mod.PubSub.list_service_nodes(host), fn node ->
             %{jid: "pubsub.#{host}", node: node}
           end)
 
@@ -1418,6 +1662,16 @@ defmodule Exjabberd.Mod.Disco do
           # The MUC service lists its rooms.
           Enum.map(Exjabberd.Mod.Muc.list_rooms(host), fn room ->
             %{jid: room}
+          end)
+
+        %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+        when is_binary(local) and local != "" and domain == host ->
+          # A local user's bare JID lists their PEP nodes (XEP-0163)
+          # — this is how contacts discover OMEMO device lists.
+          bare = Exjabberd.Xmpp.Jid.bare(iq.to)
+
+          Enum.map(Exjabberd.Mod.PubSub.list_pep_nodes(host, bare), fn node ->
+            %{jid: bare, node: node}
           end)
 
         %Exjabberd.Xmpp.Jid{local: nil, domain: domain} when domain == host ->

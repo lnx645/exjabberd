@@ -1,6 +1,6 @@
 defmodule Exjabberd.Auth do
   @moduledoc """
-  Authentication facade - 100% parity with `ejabberd_auth` + `ejabberd_auth:check_password`, stabil.
+  Authentication facade - partial implementation of `ejabberd_auth` + `ejabberd_auth:check_password`, stabil.
 
   Dispatches to configured backend per-host. Supports all ejabberd backends:
   * `:mnesia` - internal (default, `ejabberd_auth_mnesia`)
@@ -22,8 +22,7 @@ defmodule Exjabberd.Auth do
   @spec authenticate(host(), user(), password()) :: boolean()
   def authenticate(host, user, password) do
     backend = backend_for(host)
-    # Like ejabberd, try plain then SCRAM
-    backend.authenticate(host, user, password) or check_scram(host, user, password)
+    backend.authenticate(host, user, password)
   end
 
   @doc "Check password with method (ejabberd_auth:check_password)."
@@ -33,8 +32,30 @@ defmodule Exjabberd.Auth do
 
     case method do
       "plain" -> backend.authenticate(host, user, password)
-      "scram" -> check_scram(host, user, password)
+      "scram" -> verify_scram_password(host, user, password)
       _ -> backend.authenticate(host, user, password)
+    end
+  end
+
+  @doc "Verify a password against the stored SCRAM verifier data."
+  @spec verify_scram_password(host(), user(), password()) :: boolean()
+  def verify_scram_password(host, user, password) do
+    case get_scram(host, user) do
+      {:ok, creds} -> Exjabberd.Auth.Scram.verify_password(password, creds)
+      :error -> false
+    end
+  end
+
+  @doc "SCRAM verifier data for a user, or `:error` when unknown."
+  @spec get_scram(host(), user()) ::
+          {:ok, Exjabberd.Auth.Scram.credentials()} | :error
+  def get_scram(host, user) do
+    backend = backend_for(host)
+
+    cond do
+      function_exported?(backend, :get_scram, 2) -> backend.get_scram(host, user)
+      function_exported?(backend, :get_scram, 1) -> backend.get_scram(user)
+      true -> :error
     end
   end
 
@@ -79,12 +100,6 @@ defmodule Exjabberd.Auth do
   def get_users(host) do
     backend = backend_for(host)
     if function_exported?(backend, :get_users, 1), do: backend.get_users(host), else: []
-  end
-
-  defp check_scram(host, user, password) do
-    # SCRAM check: ejabberd stores scram hash, here we fallback to plain
-    backend = backend_for(host)
-    backend.authenticate(host, user, password)
   end
 
   defp backend_for(host) do

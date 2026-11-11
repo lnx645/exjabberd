@@ -1,7 +1,20 @@
 defmodule Exjabberd.Auth.Mnesia do
-  @moduledoc "Mnesia auth backend - `ejabberd_auth_mnesia` equivalent. Falls back to ETS when Mnesia not started (tests)."
+  @moduledoc """
+  Mnesia auth backend - `ejabberd_auth_mnesia` equivalent.
+
+  Passwords are stored as SCRAM-SHA-256 verifier data only (salt,
+  iteration count, StoredKey, ServerKey) in the Mnesia `:passwd` table
+  with `disc_copies`, so accounts survive a server restart. The
+  cleartext password is never stored. PLAIN logins are verified by
+  recomputing the StoredKey from the presented password.
+
+  An ETS table mirrors the same records as a read cache; the Mnesia
+  table is the source of truth.
+  """
   @behaviour Exjabberd.Auth.Behaviour
   use GenServer
+
+  alias Exjabberd.Auth.Scram
 
   @table :exjabberd_passwd
   @mnesia_table :passwd
@@ -27,27 +40,16 @@ defmodule Exjabberd.Auth.Mnesia do
   end
 
   defp ensure_mnesia do
-    try do
-      case :mnesia.create_table(@mnesia_table, attributes: [:user, :password], ram_copies: [node()]) do
-        {:atomic, :ok} -> :ok
-        {:aborted, {:already_exists, _}} -> :ok
-        _ -> :ok
-      end
-    rescue
-      _ -> :ok
-    catch
-      _, _ -> :ok
-    end
+    Exjabberd.Mnesia.ensure_table(@mnesia_table, [:user, :scram])
   end
 
   @impl true
   def authenticate(_host, user, password) do
     ensure_ets()
 
-    case lookup_mnesia(user, password) do
-      true -> true
-      false -> lookup_ets(user, password)
-      _ -> lookup_ets(user, password)
+    case get_scram(user) do
+      {:ok, creds} -> Scram.verify_password(password, creds)
+      :error -> false
     end
   end
 
@@ -61,11 +63,17 @@ defmodule Exjabberd.Auth.Mnesia do
   def create_user(_host, user, password) do
     ensure_ets()
     ensure_mnesia()
-    :ets.insert(@table, {user, password})
+    creds = Scram.derive_credentials(password)
 
-    case :mnesia.transaction(fn -> :mnesia.write({@mnesia_table, user, password}) end) do
-      {:atomic, :ok} -> :ok
-      {:aborted, _} -> :ok
+    case :mnesia.transaction(fn -> :mnesia.write({@mnesia_table, user, creds}) end) do
+      {:atomic, :ok} ->
+        :ets.insert(@table, {user, creds})
+        :ok
+
+      {:aborted, reason} ->
+        # A failed write must fail loudly: silently returning :ok is
+        # how accounts used to vanish on restart.
+        {:error, reason}
     end
   end
 
@@ -76,28 +84,54 @@ defmodule Exjabberd.Auth.Mnesia do
 
     case :mnesia.transaction(fn -> :mnesia.delete({@mnesia_table, user}) end) do
       {:atomic, :ok} -> :ok
-      {:aborted, _} -> :ok
+      {:aborted, reason} -> {:error, reason}
     end
   end
 
   @impl true
   def set_password(_host, user, password), do: create_user(nil, user, password)
 
-  defp lookup_mnesia(user, pass) do
-    case :mnesia.dirty_read(@mnesia_table, user) do
-      [{@mnesia_table, ^user, ^pass}] -> true
-      _ -> false
+  @doc "SCRAM verifier data for a user, or `:error`."
+  @spec get_scram(binary()) :: {:ok, Scram.credentials()} | :error
+  def get_scram(user) when is_binary(user) do
+    ensure_ets()
+
+    case lookup_mnesia(user) do
+      {:ok, creds} -> {:ok, creds}
+      :error -> lookup_ets(user)
     end
-  rescue
-    _ -> false
-  catch
-    _, _ -> false
   end
 
-  defp lookup_ets(user, pass) do
+  @doc "All users with stored credentials."
+  @spec get_users(binary()) :: [binary()]
+  def get_users(_host) do
+    ensure_ets()
+
+    case :mnesia.dirty_all_keys(@mnesia_table) do
+      keys when is_list(keys) -> keys
+      _ -> :ets.tab2list(@table) |> Enum.map(fn {user, _} -> user end)
+    end
+  rescue
+    _ -> :ets.tab2list(@table) |> Enum.map(fn {user, _} -> user end)
+  catch
+    _, _ -> :ets.tab2list(@table) |> Enum.map(fn {user, _} -> user end)
+  end
+
+  defp lookup_mnesia(user) do
+    case :mnesia.dirty_read(@mnesia_table, user) do
+      [{@mnesia_table, ^user, creds}] when is_map(creds) -> {:ok, creds}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
+  defp lookup_ets(user) do
     case :ets.lookup(@table, user) do
-      [{^user, ^pass}] -> true
-      _ -> false
+      [{^user, creds}] when is_map(creds) -> {:ok, creds}
+      _ -> :error
     end
   end
 

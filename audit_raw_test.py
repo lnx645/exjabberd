@@ -109,11 +109,16 @@ try:
         time.sleep(0.5)
         r = andi.recv_until("halo andi", timeout=4)
         log("message budi -> andi delivered", "halo andi" in r, r[:300].replace("\n", " ") or "(nothing received)")
-        # message to offline user
+        # message to known offline user: stored, no error (offline storage)
         andi.send("<message to='carol@localhost' type='chat' id='m3'><body>untuk carol offline</body></message>")
         time.sleep(0.5)
         r = andi.recv_until("error", timeout=3)
-        log("message to unknown/offline user -> error reply", "error" in r, r[:200].replace("\n", " ") or "(no reply)")
+        log("message to known offline user -> stored, no error", "error" not in r, r[:200].replace("\n", " ") or "(no error, stored)")
+        # message to unknown user: error reply (RFC 6121)
+        andi.send("<message to='ghost@localhost' type='chat' id='m3b'><body>untuk ghost</body></message>")
+        time.sleep(0.5)
+        r = andi.recv_until("error", timeout=4)
+        log("message to unknown user -> error reply", "error" in r and "service-unavailable" in r, r[:200].replace("\n", " ") or "(no reply)")
 
     # robustness: malformed stanza
     c3 = Conn("abuse")

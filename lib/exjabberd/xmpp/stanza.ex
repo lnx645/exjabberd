@@ -1,6 +1,6 @@
 defmodule Exjabberd.Xmpp.Stanza do
   @moduledoc """
-  XMPP stanza representation — 100% RFC 6120 §8 + XEP, stabil.
+  XMPP stanza representation — RFC 6120 §8 + XEP (partial implementation), stabil.
 
   Covers `<message/>`, `<presence/>`, `<iq/>` dengan validasi, error
   stanzas (RFC6120 §8.3.3), dan Codec bridge. Pure — tidak ada side effect,
@@ -70,17 +70,33 @@ defmodule Exjabberd.Xmpp.Stanza do
   def error?(%{type: "error"}), do: true
   def error?(_), do: false
 
-  @doc "Create error reply for iq/message (ejabberd `xmpp:make_error`)."
+  @doc "Create error reply for iq/message/presence (ejabberd `xmpp:make_error`). Keeps the stanza type: a message error is a message, not an IQ."
   @spec error_reply(stanza(), binary(), binary()) :: stanza()
-  def error_reply(%{id: id, from: from, to: to} = _stanza, condition, text \\ "") do
-    new(:iq,
+  def error_reply(%{name: name, id: id, from: from, to: to} = _stanza, condition, text \\ "") do
+    error_children = [
+      %{name: condition, attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"}, children: []}
+    ]
+
+    error_children =
+      if text != "" do
+        error_children ++
+          [
+            %{
+              name: "text",
+              attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"},
+              children: [text]
+            }
+          ]
+      else
+        error_children
+      end
+
+    new(name,
       id: id,
       from: to,
       to: from,
       type: "error",
-      payload: [
-        {:error, %{condition: condition, text: text, xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas"}}
-      ]
+      payload: [%{name: "error", attrs: %{"type" => "cancel"}, children: error_children}]
     )
   end
 
@@ -92,11 +108,54 @@ defmodule Exjabberd.Xmpp.Stanza do
   @spec get_subtag(stanza(), binary()) :: map() | nil
   def get_subtag(%{payload: payload}, xmlns) do
     Enum.find(payload, fn
-      %{attrs: %{xmlns: ^xmlns}} -> true
-      %{xmlns: ^xmlns} -> true
+      # Decoded elements carry string keys in attrs (Codec.decode);
+      # hand-built payloads may use the atom key instead.
+      %{attrs: attrs} when is_map(attrs) ->
+        Map.get(attrs, "xmlns") == xmlns or Map.get(attrs, :xmlns) == xmlns
+
+      %{xmlns: ^xmlns} ->
+        true
+
+      _ ->
+        false
+    end)
+  end
+
+  @doc "First child element of a payload with the given tag name."
+  @spec child([map()], binary()) :: map() | nil
+  def child(payload, name) when is_list(payload) do
+    Enum.find(payload, fn
+      %{name: ^name} -> true
       _ -> false
     end)
   end
+
+  @doc "Attribute of a child element, or nil."
+  @spec child_attr(map() | nil, binary()) :: binary() | nil
+  def child_attr(nil, _attr), do: nil
+  def child_attr(%{attrs: attrs}, attr) when is_map(attrs), do: Map.get(attrs, attr)
+  def child_attr(_, _), do: nil
+
+  @doc "Text content of a child element (concatenated text children), or nil."
+  @spec child_text(map() | nil, binary()) :: binary() | nil
+  def child_text(nil, _name), do: nil
+
+  def child_text(payload, name) when is_list(payload) do
+    case child(payload, name) do
+      nil -> nil
+      el -> text_of(el)
+    end
+  end
+
+  @doc "Text content of an element (concatenated text children)."
+  @spec text_of(map()) :: binary()
+  def text_of(%{children: children}) when is_list(children) do
+    children
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join("")
+  end
+
+  def text_of(_), do: ""
 
   defp random_id, do: :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
 end

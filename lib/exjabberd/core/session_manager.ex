@@ -1,6 +1,6 @@
 defmodule Exjabberd.SessionManager do
   @moduledoc """
-  Session manager - 100% parity with `ejabberd_sm` + `ejabberd_sm_mnesia/redis/sql` +
+  Session manager - partial implementation of `ejabberd_sm` + `ejabberd_sm_mnesia/redis/sql` +
   `ejabberd_sm` hooks + `ejabberd_sm:route` + `c2s` priority, stabil.
 
   Tracks online sessions (c2s). Backed by ETS locally, and by
@@ -127,6 +127,22 @@ defmodule Exjabberd.SessionManager do
     case :ets.whereis(@table) do
       :undefined -> 0
       _ -> :ets.info(@table, :size)
+    end
+  end
+
+  @doc "All online sessions as `{bare_jid, resource, pid}`."
+  @spec all_sessions() :: [{binary(), binary(), pid()}]
+  def all_sessions do
+    ensure_tables()
+
+    case :ets.whereis(@table) do
+      :undefined ->
+        []
+
+      _ ->
+        :ets.tab2list(@table)
+        |> Enum.map(fn {{bare, resource}, pid, _, _} -> {bare, resource, pid} end)
+        |> Enum.filter(fn {_bare, _res, pid} -> Process.alive?(pid) end)
     end
   end
 

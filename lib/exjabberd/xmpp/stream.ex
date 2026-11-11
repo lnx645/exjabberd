@@ -1,6 +1,6 @@
 defmodule Exjabberd.Xmpp.Stream do
   @moduledoc """
-  XMPP Stream handling - 100% parity with `ejabberd` stream parser + `ejabberd_c2s` stream, stabil.
+  XMPP Stream handling - partial implementation of `ejabberd` stream parser + `ejabberd_c2s` stream, stabil.
 
   Handles `<?xml` + `<stream:stream>` open, feature advertisement via `Feature` handler,
   STARTTLS (RFC6120 §4.7), SASL (RFC6120 §6), resource binding (RFC6120 §7),
@@ -24,39 +24,38 @@ defmodule Exjabberd.Xmpp.Stream do
     ~s(<?xml version='1.0'?><stream:stream from='#{from}' to='#{to}' id='#{id}' version='1.0' xml:lang='en' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>)
   end
 
-  @doc "Stream features before auth (via Codec Feature Handler, tidak hardcode)."
+  @doc """
+  Stream features before auth, as ONE wrapped `<stream:features>` string.
+
+  Only features that are actually implemented are advertised: STARTTLS
+  (unless already on TLS) and SASL PLAIN + SCRAM-SHA-256. EXTERNAL and
+  FAST are not advertised — they are not implemented on this server.
+  """
   @spec features_before_auth(boolean()) :: [binary()]
   def features_before_auth(tls_required) do
-    base = [
-      "<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-256</mechanism><mechanism>PLAIN</mechanism><mechanism>EXTERNAL</mechanism><mechanism>FAST</mechanism></mechanisms>"
-    ]
-
-    base =
+    starttls =
       if tls_required do
-        ["<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls>" | base]
+        "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls>"
       else
-        ["<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>" | base]
+        "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
       end
 
-    # SM + CSI via Hooks biar tidak hardcode
-    extra =
-      Exjabberd.Hooks.run_fold(:c2s_stream_features_extra, "global", [], tls_required: tls_required)
-      |> Enum.map(fn %{name: n, attrs: a} ->
-        "<#{n} #{Enum.map(a, fn {k, v} -> ~s(#{k}="#{v}") end) |> Enum.join(" ")}/>"
-      end)
+    mechanisms =
+      "<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism><mechanism>SCRAM-SHA-256</mechanism></mechanisms>"
 
-    base ++ extra
+    ["<stream:features>" <> starttls <> mechanisms <> "</stream:features>"]
   end
 
-  @doc "Stream features after auth (bind + session + SM + CSI)."
+  @doc """
+  Stream features after auth, as ONE wrapped `<stream:features>` string.
+
+  Only resource binding is advertised. `session` (RFC 3921, obsolete),
+  Stream Management (XEP-0198) and CSI (XEP-0352) are not implemented
+  and are deliberately not advertised.
+  """
   @spec features_after_auth() :: [binary()]
   def features_after_auth do
-    [
-      "<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><required/></bind>",
-      "<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>",
-      "<sm xmlns='urn:xmpp:sm:3'/>",
-      "<csi xmlns='urn:xmpp:csi:0'/>"
-    ]
+    ["<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>"]
   end
 
   @doc "Parse stream error (RFC6120 §4.9, seperti `ejabberd` `stream_error`)."

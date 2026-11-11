@@ -1,6 +1,6 @@
 defmodule Exjabberd.Xmpp.Codec do
   @moduledoc """
-  XMPP Codec — XML parser → XMPP stanza, 100% RFC 6120 + ejabberd `xmpp` codec parity.
+  XMPP Codec — XML parser → XMPP stanza, RFC 6120 + ejabberd `xmpp` codec (partial implementation).
 
   Seperti `fast_xml`/`xmpp` di ejabberd, tidak hardcode string `"<message>"`
   di mana-mana. Parsing via `:xmerl_scan` (OTP) + `Exjabberd.Xmpp.Jid` + `Stanza`.
@@ -21,8 +21,18 @@ defmodule Exjabberd.Xmpp.Codec do
   @spec decode(xml()) :: {:ok, Stanza.stanza()} | {:error, atom()}
   def decode(xml) when is_binary(xml) do
     case parse_xml(xml) do
-      {:ok, el} -> {:ok, element_to_stanza(el, xml)}
-      {:error, _} = err -> err
+      {:ok, %{name: name} = el} when name in ["message", "presence", "iq"] ->
+        try do
+          {:ok, element_to_stanza(el, xml)}
+        rescue
+          ArgumentError -> {:error, :invalid_type}
+        end
+
+      {:ok, _el} ->
+        {:error, :unknown_stanza}
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -31,20 +41,21 @@ defmodule Exjabberd.Xmpp.Codec do
   def encode(%{name: name, id: id, from: from, to: to, type: type, payload: payload}) do
     attrs =
       [
-        id && ~s(id="#{escape(id)}"),
-        from && ~s(from="#{escape(jid_to_string(from))}"),
-        to && ~s(to="#{escape(jid_to_string(to))}"),
-        type && ~s(type="#{escape(type)}")
+        id && ~s(id='#{escape(id)}'),
+        from && ~s(from='#{escape(jid_to_string(from))}'),
+        to && ~s(to='#{escape(jid_to_string(to))}'),
+        type && ~s(type='#{escape(type)}')
       ]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" ")
 
     inner = encode_payload(payload)
 
-    if inner == "" do
-      "<#{name} #{attrs}/>"
-    else
-      "<#{name} #{attrs}>#{inner}</#{name}>"
+    cond do
+      inner == "" and attrs == "" -> "<#{name}/>"
+      inner == "" -> "<#{name} #{attrs}/>"
+      attrs == "" -> "<#{name}>#{inner}</#{name}>"
+      true -> "<#{name} #{attrs}>#{inner}</#{name}>"
     end
   end
 
@@ -53,21 +64,14 @@ defmodule Exjabberd.Xmpp.Codec do
   def parse_xml(xml) do
     try do
       {doc, _} =
-        apply(:xmerl_scan, :string, [String.to_charlist(xml), [{:quiet, true}, {:validation, :off}]])
+        apply(:xmerl_scan, :string, [
+          String.to_charlist(xml),
+          [{:quiet, true}, {:validation, :off}]
+        ])
 
       {:ok, xmerl_to_element(doc)}
     rescue
-      _ ->
-        case Regex.run(~r/<(\w+)([^>]*)>/, xml) do
-          [_, name, attrs_str] ->
-            attrs =
-              Regex.scan(~r/(\w+)="([^"]*)"/, attrs_str) |> Map.new(fn [_, k, v] -> {k, v} end)
-
-            {:ok, %{name: name, attrs: attrs, children: []}}
-
-          _ ->
-            {:error, :malformed}
-        end
+      _ -> {:error, :malformed}
     catch
       _, _ -> {:error, :malformed}
     end
@@ -78,11 +82,15 @@ defmodule Exjabberd.Xmpp.Codec do
   @doc "Build stream features via handler registry (ejabberd `ejabberd_c2s:stream_features` tidak hardcode string)."
   @spec stream_features(binary(), keyword()) :: [element()]
   def stream_features(host, opts \\ []) do
-    # Kumpulkan dari Hooks `c2s_stream_features` — tiap feature (STARTTLS, SASL, bind, session, SM, carbons, CSI) daftar sendiri
+    # Kumpulkan dari Hooks `c2s_stream_features` — tiap feature (STARTTLS, SASL, bind) daftar sendiri
     base = Exjabberd.Hooks.run_fold(:c2s_stream_features, host, [], opts)
-    # Fallback kalau belum ada yang daftar (biar tetap RFC 6120 + RFC 7395 + XEP-0198)
+    # Fallback kalau belum ada yang daftar. Hanya fitur yang benar-benar
+    # diimplementasi yang diiklankan: STARTTLS (bila belum TLS), SASL
+    # PLAIN + SCRAM-SHA-256, dan resource binding setelah auth. SM, CSI,
+    # carbons dan SCRAM-SHA-1/512 TIDAK diiklankan karena belum ada.
     if base == [] do
       authenticated = Keyword.get(opts, :authenticated, false)
+      tls = Keyword.get(opts, :tls, false)
 
       sasl =
         if authenticated do
@@ -94,9 +102,7 @@ defmodule Exjabberd.Xmpp.Codec do
               attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-sasl"},
               children: [
                 %{name: "mechanism", attrs: %{}, children: ["PLAIN"]},
-                %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-1"]},
-                %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-256"]},
-                %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-512"]}
+                %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-256"]}
               ]
             }
           ]
@@ -109,27 +115,20 @@ defmodule Exjabberd.Xmpp.Codec do
           []
         end
 
-      sm =
-        if authenticated do
-          [%{name: "sm", attrs: %{"xmlns" => "urn:xmpp:sm:3"}, children: []}]
-        else
+      tls_el =
+        if authenticated or tls do
           []
-        end
-
-      auth_features = if authenticated, do: bind ++ sm, else: sasl
-
-      tls =
-        if authenticated,
-          do: [],
-          else: [
+        else
+          [
             %{
               name: "starttls",
               attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-tls"},
               children: []
             }
           ]
+        end
 
-      tls ++ auth_features
+      tls_el ++ sasl ++ bind
     else
       base
     end
@@ -179,13 +178,252 @@ defmodule Exjabberd.Xmpp.Codec do
   defp encode_payload(list) when is_list(list), do: Enum.map_join(list, "", &encode_payload/1)
 
   defp encode_payload(%{name: n, attrs: a, children: c}) do
-    attrs = a |> Enum.map(fn {k, v} -> ~s(#{k}="#{escape(v)}") end) |> Enum.join(" ")
-    inner = encode_payload(c)
-    if inner == "", do: "<#{n} #{attrs}/>", else: "<#{n} #{attrs}>#{inner}</#{n}>"
+    encode_element(n, a, c)
+  end
+
+  # --- IQ result payloads built by the mod handlers (ad-hoc maps) ---
+
+  defp encode_payload(%{xmlns: "jabber:iq:roster", items: items} = m) do
+    attrs = %{"xmlns" => "jabber:iq:roster"}
+
+    attrs =
+      case Map.get(m, :ver) do
+        nil -> attrs
+        ver -> Map.put(attrs, "ver", to_string(ver))
+      end
+
+    encode_element("query", attrs, Enum.map(items, &roster_item/1))
+  end
+
+  defp encode_payload(%{xmlns: "http://jabber.org/protocol/disco#info"} = m) do
+    identities =
+      case Map.get(m, :identities) do
+        [_ | _] = ids -> Enum.map(ids, &disco_identity/1)
+        _ -> [disco_identity(%{category: "server", type: "im", name: "exjabberd"})]
+      end
+
+    features =
+      Enum.map(Map.get(m, :features, []), fn f ->
+        %{name: "feature", attrs: %{"var" => f}, children: []}
+      end)
+
+    encode_element(
+      "query",
+      %{"xmlns" => "http://jabber.org/protocol/disco#info"},
+      identities ++ features
+    )
+  end
+
+  defp encode_payload(%{xmlns: "http://jabber.org/protocol/disco#items"} = m) do
+    children =
+      Enum.map(Map.get(m, :items, []), fn item ->
+        attrs = %{"jid" => Map.get(item, :jid, "")}
+
+        attrs =
+          case Map.get(item, :name) do
+            nil -> attrs
+            name -> Map.put(attrs, "name", name)
+          end
+
+        %{name: "item", attrs: attrs, children: []}
+      end)
+
+    encode_element("query", %{"xmlns" => "http://jabber.org/protocol/disco#items"}, children)
+  end
+
+  defp encode_payload(%{xmlns: "urn:xmpp:time", tzo: tzo, utc: utc}) do
+    encode_element("time", %{"xmlns" => "urn:xmpp:time"}, [
+      %{name: "tzo", attrs: %{}, children: [to_string(tzo)]},
+      %{name: "utc", attrs: %{}, children: [to_string(utc)]}
+    ])
+  end
+
+  defp encode_payload(%{xmlns: "jabber:iq:version"} = m) do
+    children = [
+      %{name: "name", attrs: %{}, children: [to_string(Map.get(m, :name, "exjabberd"))]},
+      %{name: "version", attrs: %{}, children: [to_string(Map.get(m, :version, ""))]}
+    ]
+
+    children =
+      case Map.get(m, :os) do
+        nil -> children
+        os -> children ++ [%{name: "os", attrs: %{}, children: [to_string(os)]}]
+      end
+
+    encode_element("query", %{"xmlns" => "jabber:iq:version"}, children)
+  end
+
+  defp encode_payload(%{xmlns: "jabber:iq:register"} = m) do
+    children = []
+
+    children =
+      case Map.get(m, :instructions) do
+        nil -> children
+        text -> children ++ [%{name: "instructions", attrs: %{}, children: [to_string(text)]}]
+      end
+
+    children =
+      if Map.has_key?(m, :username) do
+        children ++
+          [%{name: "username", attrs: %{}, children: [to_string(Map.get(m, :username) || "")]}]
+      else
+        children
+      end
+
+    children =
+      if Map.has_key?(m, :password) do
+        children ++
+          [%{name: "password", attrs: %{}, children: [to_string(Map.get(m, :password) || "")]}]
+      else
+        children
+      end
+
+    encode_element("query", %{"xmlns" => "jabber:iq:register"}, children)
+  end
+
+  defp encode_payload(%{xmlns: "jabber:iq:privacy"} = m) do
+    children =
+      Enum.map(Map.get(m, :lists, []), fn list ->
+        items =
+          Enum.map(Map.get(list, :items, []), fn item ->
+            %{name: "item", attrs: item_attrs(item), children: []}
+          end)
+
+        %{name: "list", attrs: %{"name" => to_string(Map.get(list, :name, ""))}, children: items}
+      end)
+
+    encode_element("query", %{"xmlns" => "jabber:iq:privacy"}, children)
+  end
+
+  defp encode_payload(%{xmlns: "urn:xmpp:blocking"} = m) do
+    children =
+      Enum.map(Map.get(m, :blocklist, []), fn jid ->
+        %{name: "item", attrs: %{"jid" => to_string(jid)}, children: []}
+      end)
+
+    encode_element("blocklist", %{"xmlns" => "urn:xmpp:blocking"}, children)
+  end
+
+  defp encode_payload(%{xmlns: "vcard-temp"} = m) do
+    children =
+      case Map.get(m, :vcard) do
+        vc when is_map(vc) ->
+          Enum.map(vc, fn {k, v} ->
+            %{name: to_string(k), attrs: %{}, children: [to_string(v)]}
+          end)
+
+        _ ->
+          []
+      end
+
+    encode_element("vCard", %{"xmlns" => "vcard-temp"}, children)
+  end
+
+  # Error stanza payload built by Stanza.error_reply / Iq.error_iq.
+  defp encode_payload({:error, %{condition: condition} = info}) do
+    text = Map.get(info, :text, "")
+
+    children = [
+      %{name: condition, attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"}, children: []}
+    ]
+
+    children =
+      if text != "" do
+        children ++
+          [
+            %{
+              name: "text",
+              attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"},
+              children: [to_string(text)]
+            }
+          ]
+      else
+        children
+      end
+
+    encode_element("error", %{"type" => "cancel"}, children)
+  end
+
+  # Long tail: any other handler payload carrying an xmlns. The element
+  # name is derived from the namespace; remaining keys become child
+  # elements with text content.
+  defp encode_payload(%{xmlns: ns} = m) do
+    children =
+      m
+      |> Map.delete(:xmlns)
+      |> Enum.map(fn {k, v} -> %{name: to_string(k), attrs: %{}, children: [to_string(v)]} end)
+
+    encode_element(xmlns_tag(ns), %{"xmlns" => ns}, children)
   end
 
   defp encode_payload(bin) when is_binary(bin), do: escape(bin)
   defp encode_payload(other), do: escape(inspect(other))
+
+  defp encode_element(name, attrs, children) do
+    attrs_s =
+      attrs |> Enum.map(fn {k, v} -> ~s(#{k}='#{escape(v)}') end) |> Enum.join(" ")
+
+    inner = encode_payload(children)
+
+    cond do
+      inner == "" and attrs_s == "" -> "<#{name}/>"
+      inner == "" -> "<#{name} #{attrs_s}/>"
+      attrs_s == "" -> "<#{name}>#{inner}</#{name}>"
+      true -> "<#{name} #{attrs_s}>#{inner}</#{name}>"
+    end
+  end
+
+  defp roster_item(%{jid: jid} = item) do
+    attrs = %{
+      "jid" => to_string(jid),
+      "subscription" => to_string(Map.get(item, :subscription, :none))
+    }
+
+    attrs =
+      case Map.get(item, :name) do
+        nil -> attrs
+        "" -> attrs
+        name -> Map.put(attrs, "name", to_string(name))
+      end
+
+    children =
+      Enum.map(Map.get(item, :groups, []), fn g ->
+        %{name: "group", attrs: %{}, children: [to_string(g)]}
+      end)
+
+    %{name: "item", attrs: attrs, children: children}
+  end
+
+  defp disco_identity(%{category: cat, type: type} = id) do
+    attrs = %{"category" => to_string(cat), "type" => to_string(type)}
+
+    attrs =
+      case Map.get(id, :name) do
+        nil -> attrs
+        name -> Map.put(attrs, "name", to_string(name))
+      end
+
+    %{name: "identity", attrs: attrs, children: []}
+  end
+
+  defp item_attrs(item) when is_map(item) do
+    Enum.reduce(item, %{}, fn {k, v}, acc ->
+      if is_binary(v) or is_atom(v) or is_integer(v),
+        do: Map.put(acc, to_string(k), to_string(v)),
+        else: acc
+    end)
+  end
+
+  defp xmlns_tag("jabber:iq:roster"), do: "query"
+  defp xmlns_tag("http://jabber.org/protocol/disco#info"), do: "query"
+  defp xmlns_tag("http://jabber.org/protocol/disco#items"), do: "query"
+  defp xmlns_tag("jabber:iq:version"), do: "query"
+  defp xmlns_tag("jabber:iq:privacy"), do: "query"
+  defp xmlns_tag("jabber:iq:register"), do: "query"
+  defp xmlns_tag("urn:xmpp:time"), do: "time"
+  defp xmlns_tag("urn:xmpp:blocking"), do: "blocklist"
+  defp xmlns_tag("vcard-temp"), do: "vCard"
+  defp xmlns_tag(_), do: "query"
 
   defp escape(str) when is_binary(str) do
     str
@@ -193,6 +431,8 @@ defmodule Exjabberd.Xmpp.Codec do
     |> String.replace("<", "&lt;")
     |> String.replace(">", "&gt;")
     |> String.replace("\"", "&quot;")
+    # Attributes are single-quoted on the wire, so escape those too.
+    |> String.replace("'", "&apos;")
   end
 
   defp escape(other), do: escape(to_string(other))
@@ -201,7 +441,9 @@ defmodule Exjabberd.Xmpp.Codec do
   defp xmerl_to_element({:xmlElement, name, _, _, _, _, _, attrs, content, _, _, _}) do
     attr_map =
       attrs
-      |> Enum.map(fn {:xmlAttribute, k, _, _, _, _, _, _, v, _} -> {to_string(k), to_string(v)} end)
+      |> Enum.map(fn {:xmlAttribute, k, _, _, _, _, _, _, v, _} ->
+        {to_string(k), to_string(v)}
+      end)
       |> Map.new()
 
     children =
@@ -266,7 +508,7 @@ defmodule Exjabberd.Xmpp.Feature do
           name: "mechanisms",
           attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-sasl"},
           children:
-            Enum.map(["PLAIN", "SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-512"], fn m ->
+            Enum.map(["PLAIN", "SCRAM-SHA-256"], fn m ->
               %{name: "mechanism", attrs: %{}, children: [m]}
             end)
         }

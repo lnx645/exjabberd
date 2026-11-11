@@ -1,6 +1,6 @@
 defmodule Exjabberd.Iq do
   @moduledoc """
-  IQ handling - 100% parity with `ejabberd_iq` + `gen_iq_handler` + `ejabberd_hooks`.
+  IQ handling - partial implementation of `ejabberd_iq` + `gen_iq_handler` + `ejabberd_hooks`.
 
   Dispatches IQ stanzas to registered handlers per host + namespace + type.
   Mirrors ejabberd: `ejabberd_iq:register_handler/5`, `process_iq/3`.
@@ -56,12 +56,24 @@ defmodule Exjabberd.Iq do
 
     case handler do
       {mod, fun, opts} ->
-        if Keyword.get(opts, :queue, false) do
-          # Queue mode like `gen_iq_handler` with worker pool
-          :ets.insert(@queue_table, {make_ref(), {mod, fun, iq, host}})
-          apply(mod, fun, [iq, host])
-        else
-          apply(mod, fun, [iq, host])
+        result =
+          if Keyword.get(opts, :queue, false) do
+            # Queue mode like `gen_iq_handler` with worker pool
+            :ets.insert(@queue_table, {make_ref(), {mod, fun, iq, host}})
+            apply(mod, fun, [iq, host])
+          else
+            apply(mod, fun, [iq, host])
+          end
+
+        case result do
+          # A handler answers with the request IQ mutated to type
+          # "result"; the reply must go back to the requester, so the
+          # from/to are swapped here (handlers do not do it themselves).
+          {:ok, %{type: "result"} = result_iq} ->
+            {:ok, %{result_iq | from: iq.to || host, to: iq.from}}
+
+          other ->
+            other
         end
 
       nil ->
@@ -81,10 +93,22 @@ defmodule Exjabberd.Iq do
   def error_iq(%{id: id, from: from, to: to}, condition) do
     Exjabberd.Xmpp.Stanza.new(:iq,
       id: id,
-      from: to,
+      from: to || "localhost",
       to: from,
       type: "error",
-      payload: [{:error, %{condition: condition, xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas"}}]
+      payload: [
+        %{
+          name: "error",
+          attrs: %{"type" => "cancel"},
+          children: [
+            %{
+              name: condition,
+              attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"},
+              children: []
+            }
+          ]
+        }
+      ]
     )
   end
 
@@ -95,11 +119,12 @@ defmodule Exjabberd.Iq do
     end
   end
 
+  # The payload is a list of decoded element maps
+  # (%{name, attrs, children}); the namespace lives in attrs.
   defp get_xmlns(payload) when is_list(payload) do
     Enum.find_value(payload, "", fn
-      {_tag, %{xmlns: ns}} when is_binary(ns) -> ns
-      {tag, %{}} when is_binary(tag) -> tag
-      {tag, _} when is_binary(tag) -> tag
+      %{attrs: %{"xmlns" => ns}} when is_binary(ns) -> ns
+      %{xmlns: ns} when is_binary(ns) -> ns
       _ -> nil
     end) || ""
   end
@@ -118,7 +143,7 @@ end
 
 defmodule Exjabberd.Service do
   @moduledoc """
-  XMPP Service (component) - `ejabberd_service` (XEP-0114) 100% parity.
+  XMPP Service (component) - `ejabberd_service` (XEP-0114) (partial implementation).
 
   Handles external components like transports via `jabber:component:accept`.
   Authenticates via handshake (SHA1 of stream id + password) like ejabberd.
@@ -155,7 +180,7 @@ defmodule Exjabberd.Service do
 end
 
 defmodule Exjabberd.XmlRpc do
-  @moduledoc "XML-RPC - `ejabberd_xmlrpc` 100% parity. Used by `ejabberdctl` via HTTP."
+  @moduledoc "XML-RPC - `ejabberd_xmlrpc` (partial implementation). Used by `ejabberdctl` via HTTP."
 
   @doc "Handle XML-RPC call (ejabberd_xmlrpc:handle). Parses `<methodCall>` and dispatches to `ejabberd_commands`."
   @spec handle(binary()) :: {:ok, binary()} | {:error, term()}
@@ -183,7 +208,7 @@ defmodule Exjabberd.XmlRpc do
 end
 
 defmodule Exjabberd.BackendSup do
-  @moduledoc "Backend supervisor - `ejabberd_backend_sup` 100% parity. Supervises `ejabberd_redis_sup` + `ejabberd_sql_sup` + `eldap_pool`."
+  @moduledoc "Backend supervisor - `ejabberd_backend_sup` (partial implementation). Supervises `ejabberd_redis_sup` + `ejabberd_sql_sup` + `eldap_pool`."
   use Supervisor
   def start_link(opts), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   @impl true
@@ -198,7 +223,7 @@ end
 
 defmodule Exjabberd.Ctl do
   @moduledoc """
-  Control interface - `ejabberd_ctl` (ejabberdctl) 100% parity.
+  Control interface - `ejabberd_ctl` (ejabberdctl) (partial implementation).
 
   Provides `exjabberdctl` CLI: `status`, `register`, `stop`, `mnesia`, etc.
   Delegates to `Exjabberd.Admin` and `ejabberd_commands`.
@@ -224,7 +249,7 @@ defmodule Exjabberd.Ctl do
 end
 
 defmodule Exjabberd.Misc do
-  @moduledoc "Misc utils - `misc` 100% parity. Helpers used across ejabberd."
+  @moduledoc "Misc utils - `misc` (partial implementation). Helpers used across ejabberd."
 
   @doc "Random string (misc:random_string)."
   @spec random_string(non_neg_integer()) :: binary()

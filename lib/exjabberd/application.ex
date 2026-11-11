@@ -139,6 +139,12 @@ defmodule Exjabberd.Application do
             "S2S on #{port}"
           )
 
+        module == "exjabberd_http" ->
+          start_listener(
+            {Exjabberd.Http.Server, [port: port, host: host, name: Exjabberd.Http.Server]},
+            "HTTP on #{port} (admin/BOSH/WS/upload/API)"
+          )
+
         true ->
           Logger.warning("listen entry with unknown module #{inspect(module)}, skipped")
       end

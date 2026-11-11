@@ -172,22 +172,18 @@ defmodule Exjabberd.Regexp do
 end
 
 defmodule Exjabberd.Web do
-  @moduledoc "Web - `ejabberd_web` generic HTTP handler (partial implementation), stabil. Dispatches `request_handlers` like ejabberd."
+  @moduledoc """
+  Web - `ejabberd_web` generic HTTP handler. Dispatches to the real
+  HTTP stack (`Exjabberd.Http.Server.dispatch/1`): admin, REST API,
+  BOSH, upload. (The old stub handler modules were removed in
+  Phase 4; WebSocket upgrades are handled by the TCP server
+  itself, before dispatch.)
+  """
 
   @doc "Handle request (like `ejabberd_web:process_request`)."
   @spec handle(map()) :: {:ok, map()}
-  def handle(%{path: path, method: _method} = req) do
-    case Exjabberd.Web.Http.handler_for(path) do
-      {:ok, mod} ->
-        mod.handle(req)
-
-      :error ->
-        {:ok, %{status: 404, headers: [{"content-type", "text/plain"}], body: "Not found: #{path}"}}
-    end
+  def handle(req) do
+    {status, headers, body} = Exjabberd.Http.Server.dispatch(req)
+    {:ok, %{status: status, headers: headers, body: body}}
   end
-
-  def handle(req),
-    do:
-      {:ok,
-       %{status: 200, headers: [{"content-type", "text/plain"}], body: "ok: #{inspect(req[:path])}"}}
 end

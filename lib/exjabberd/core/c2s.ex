@@ -36,6 +36,7 @@ defmodule Exjabberd.C2S do
   @type state :: %{
           socket: port() | nil,
           socket_kind: :tcp | :ssl,
+          out_pid: pid() | nil,
           tls: boolean(),
           jid: Jid.t() | nil,
           host: binary(),
@@ -70,6 +71,11 @@ defmodule Exjabberd.C2S do
      %{
        socket: Keyword.get(opts, :socket),
        socket_kind: Keyword.get(opts, :socket_kind, :tcp),
+       # Non-TCP transport (BOSH / WebSocket): when set, outbound XML
+       # is sent as `{:xmpp_out, xml}` to this pid instead of to a
+       # socket. The HTTP transports own the wire; the session logic
+       # (routing, SM counting, CSI, hooks) is exactly the TCP one.
+       out_pid: Keyword.get(opts, :out_pid),
        tls: Keyword.get(opts, :tls, false),
        jid: nil,
        host: host,
@@ -114,6 +120,23 @@ defmodule Exjabberd.C2S do
   @doc "Hand the connection socket to this process (listener accept / STARTTLS upgrade)."
   @spec set_socket(pid(), port(), :tcp | :ssl) :: :ok
   def set_socket(pid, socket, kind), do: GenServer.call(pid, {:set_socket, socket, kind})
+
+  @doc """
+  Route outbound XML to a pid (`{:xmpp_out, xml}`) instead of a
+  socket — the BOSH / WebSocket transports. Cleared by `set_socket/3`.
+  """
+  @spec set_out_pid(pid(), pid()) :: :ok
+  def set_out_pid(pid, out_pid), do: GenServer.call(pid, {:set_out_pid, out_pid})
+
+  @doc """
+  Barrier: returns only after every cast sent to this process before
+  the call has been processed. The HTTP transports use it after
+  handling a request so an IQ reply sent via `send_xml/2` has
+  reached the transport's outbound queue before the HTTP response
+  is built (casts alone give no such guarantee).
+  """
+  @spec sync(pid()) :: :ok
+  def sync(pid), do: GenServer.call(pid, :sync)
 
   @doc "Handle stream header (ejabberd_c2s:open_stream). Returns the stream header plus exactly ONE valid `<stream:features>` block."
   @spec open_stream(pid(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
@@ -218,8 +241,14 @@ defmodule Exjabberd.C2S do
   end
 
   def handle_call({:set_socket, socket, kind}, _from, state) do
-    {:reply, :ok, %{state | socket: socket, socket_kind: kind, tls: kind == :ssl}}
+    {:reply, :ok, %{state | socket: socket, socket_kind: kind, tls: kind == :ssl, out_pid: nil}}
   end
+
+  def handle_call({:set_out_pid, out_pid}, _from, state) do
+    {:reply, :ok, %{state | out_pid: out_pid, socket: nil}}
+  end
+
+  def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
   def handle_call({:open_stream, from, to}, _from, state) do
     # The stream's `to` is the domain the client addressed — that is
@@ -309,6 +338,15 @@ defmodule Exjabberd.C2S do
 
   # Resume a detached session onto a fresh socket. Called by
   # `Exjabberd.Mod.StreamMgmt.resume/5` from the new connection.
+  # HTTP transports (BOSH / WebSocket) cannot take over a socket:
+  # resumption across transports is not supported — the client gets
+  # `item-not-found` and starts a fresh session (BOSH has its own
+  # rid-based retransmission instead).
+  def handle_call({:sm_resume, _h, _socket, _kind}, _from, %{out_pid: pid} = state)
+      when is_pid(pid) do
+    {:reply, {:error, :not_found}, state}
+  end
+
   def handle_call({:sm_resume, _h, _socket, _kind}, _from, %{sm: nil} = state) do
     {:reply, {:error, :not_found}, state}
   end
@@ -538,7 +576,7 @@ defmodule Exjabberd.C2S do
         end
 
         state = %{state | sm: %{sm | out_h: seq, unacked: unacked}}
-        if state.socket != nil, do: send_to_client(state, xml)
+        if state.socket != nil or state.out_pid != nil, do: send_to_client(state, xml)
         state
     end
   end
@@ -637,6 +675,11 @@ defmodule Exjabberd.C2S do
       :exit, _ -> :ok
     end
 
+    :ok
+  end
+
+  defp send_to_client(%{out_pid: pid} = _state, data) when is_pid(pid) do
+    send(pid, {:xmpp_out, data})
     :ok
   end
 

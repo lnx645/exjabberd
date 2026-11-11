@@ -52,13 +52,22 @@ listen:
     module: exjabberd_s2s_in
     max_stanza_size: 262144
     shaper: s2s_shaper
+  -
+    port: 5280
+    ip: "::"
+    module: exjabberd_http
+    # Serves the web admin (/admin), REST API (/api), BOSH
+    # (/bosh, /http-bind), XMPP over WebSocket (/ws) and HTTP File
+    # Upload (/upload). Plain HTTP only; put a reverse proxy with
+    # TLS in front of it in production.
 ## NOT IMPLEMENTED (removed from the active listen list on purpose —
 ## the old file claimed these ports, but nothing ever listened on them):
-##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — there is
-##         no HTTP stack (no Plug/Cowboy/Bandit/Phoenix dependency).
-##         BOSH (XEP-0206), file upload (XEP-0363) and the web admin
-##         therefore do not exist yet.
-##   5280  HTTP: /admin, /.well-known/acme-challenge — same reason.
+##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — the
+##         HTTP stack listens on plain HTTP port 5280 instead (see
+##         the exjabberd_http entry above); there is no TLS HTTP
+##         listener yet, and no captcha endpoint.
+##   5280  HTTP: /admin, /.well-known/acme-challenge — /admin exists
+##         now; ACME challenge handling does not.
 ##   5478  STUN/TURN over UDP — not implemented.
 ##   1883  MQTT — not implemented.
     module: mod_mqtt
@@ -78,6 +87,25 @@ s2s_use_starttls: optional
 #   example.com:
 #     host: 127.0.0.1
 #     port: 5269
+
+## HTTP stack (admin web, BOSH, WebSocket, file upload, REST API).
+## `api_token` is the REST API Bearer token; `upload_secret` signs
+## upload URLs and admin session cookies. The values below are DEV
+## placeholders — change them in production, and NEVER commit a
+## production secret. When `upload_secret` is empty, the server
+## generates a random ephemeral secret per boot (upload URLs then
+## stop working after a restart). Admin login uses a real XMPP
+## account listed in the `admin` ACL below — there is no separate
+## admin password to configure here.
+http:
+  api_token: "dev-api-token-change-me"
+  upload_secret: ""
+  upload_dir: "priv/uploads"
+  upload_max_size: 10485760
+  upload_expiry_seconds: 3600
+  upload_url_base: ""
+  bosh_wait: 60
+  bosh_inactivity: 60
 
 acl:
   local:
@@ -174,15 +202,10 @@ modules:
   mod_disco: {}
   mod_fail2ban: {}
   mod_http_api: {}
-  # mod_http_upload is configured but has no HTTP listener to serve it
-  # (port 5443 above is not implemented), so file upload does not work
-  # yet. Keep the section for when the HTTP stack lands.
-  mod_http_upload:
-    put_url: https://@HOST@:5443/upload
-    custom_headers:
-      "Access-Control-Allow-Origin": "https://@HOST@"
-      "Access-Control-Allow-Methods": "GET,HEAD,PUT,OPTIONS"
-      "Access-Control-Allow-Headers": "Content-Type"
+  # mod_http_upload serves XEP-0363 slots; the PUT/GET URLs are built
+  # from http.upload_url_base (or the HTTP listener) by the HTTP stack.
+  # Limits live in the `http:` section above.
+  mod_http_upload: {}
   mod_last: {}
   mod_mam:
     ## Mnesia is limited to 2GB, better to use an SQL backend

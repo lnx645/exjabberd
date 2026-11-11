@@ -13,3 +13,4 @@
 /mnesia_data_test/
 /priv/ssl/
 erl_crash.dump
+/priv/uploads/

@@ -20,9 +20,9 @@ defmodule Exjabberd do
   * `Exjabberd.Auth` - Mnesia backend is real (SCRAM credentials);
     SQL/LDAP/JWT/anonymous/OAuth/external backends are stubs
   * `Exjabberd.Cluster` - single node only; clustering is not wired up
-
-  There is no HTTP stack (no Plug/Cowboy/Bandit/Phoenix): no web admin,
-  BOSH, WebSocket, file upload, STUN/TURN or MQTT listener exists yet.
+  * `Exjabberd.Http.*` - HTTP stack on plain `:gen_tcp` (no new
+    dependencies): web admin on 5280, BOSH, XMPP over WebSocket,
+    HTTP File Upload (XEP-0363) and a REST API. See README.md.
   ## Extensibility
 
       defmodule MyFeature do

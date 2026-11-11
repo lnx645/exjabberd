@@ -116,8 +116,12 @@ defmodule Exjabberd.Config do
       domain = domain |> to_string() |> String.downcase()
 
       case normalize_override_target(target) do
-        {:ok, pair} -> Map.put(acc, domain, pair)
-        :error -> Logger.warning("config s2s_host_overrides #{domain}: ignored #{inspect(target)}"); acc
+        {:ok, pair} ->
+          Map.put(acc, domain, pair)
+
+        :error ->
+          Logger.warning("config s2s_host_overrides #{domain}: ignored #{inspect(target)}")
+          acc
       end
     end)
   end
@@ -182,10 +186,18 @@ defmodule Exjabberd.Config do
 
     s2s_use_starttls =
       case Map.get(data, "s2s_use_starttls", Map.get(data, :s2s_use_starttls, "optional")) do
-        value when value in ["optional", :optional] -> :optional
-        value when value in ["required", :required] -> :required
-        value when value in ["disabled", :disabled] -> :disabled
-        other -> Logger.warning("config s2s_use_starttls: unknown #{inspect(other)}, using :optional"); :optional
+        value when value in ["optional", :optional] ->
+          :optional
+
+        value when value in ["required", :required] ->
+          :required
+
+        value when value in ["disabled", :disabled] ->
+          :disabled
+
+        other ->
+          Logger.warning("config s2s_use_starttls: unknown #{inspect(other)}, using :optional")
+          :optional
       end
 
     s2s_dialback_secret =
@@ -198,6 +210,12 @@ defmodule Exjabberd.Config do
       normalize_host_overrides(
         Map.get(data, "s2s_host_overrides", Map.get(data, :s2s_host_overrides, %{}))
       )
+
+    http_config =
+      case Map.get(data, "http", Map.get(data, :http, %{})) do
+        map when is_map(map) -> map
+        _ -> %{}
+      end
 
     # The configured `hosts:` list is authoritative: the initial
     # state carries a placeholder "localhost" entry, which must go
@@ -225,6 +243,7 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
+      |> put_in([:global, :http], http_config)
 
     # Validate via Options like ejabberd does
     Enum.each(hosts, fn h ->

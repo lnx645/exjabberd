@@ -23,10 +23,21 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd" mix run --no-halt
 ```
 
 Listens on TCP **5222** (C2S, STARTTLS optional) and, when
-`exjabberd.yml` enables it, **5223** (direct TLS C2S).
-The TLS certificate is self-signed for `localhost`, generated on first
-use into `priv/ssl/` (gitignored). Production deployments must use a
-real certificate for the server domain instead.
+`exjabberd.yml` enables it, **5223** (direct TLS C2S) and **5280**
+(plain HTTP: web admin `/admin`, REST API `/api`, BOSH
+`/bosh` + `/http-bind`, XMPP over WebSocket `/ws`, HTTP File Upload
+`/upload`). The TLS certificate is self-signed for `localhost`,
+generated on first use into `priv/ssl/` (gitignored). Production
+deployments must use a real certificate for the server domain
+instead, and put a TLS reverse proxy in front of port 5280 — the
+HTTP listener itself is plain HTTP only.
+
+HTTP settings live in the `http:` section of `exjabberd.yml`
+(REST API Bearer token, HMAC secret for upload URLs + admin
+cookies, upload directory/size/lifetime, BOSH wait/inactivity).
+Admin login uses a real XMPP account listed in the `admin` ACL
+(default `admin@localhost` — create it first); there is no
+separate admin password and no default credential.
 
 Configuration lives in `exjabberd.yml` at the repo root (the
 application also accepts `config/exjabberd.yml` and `nxmpps.yml`, in
@@ -71,14 +82,20 @@ raw-socket probe for the same three features against a running
 dev server; `test_mam_pubsub.py` (raw sockets) and
 `test_mam_pubsub_slix.py` (slixmpp 1.17, plugins `xep_0313` and
 `xep_0060`) are the repeatable probes for MAM and PubSub.
+`test/exjabberd/http_test.exs` is the ExUnit suite for the HTTP
+stack (admin, REST API, BOSH, WebSocket, upload), and
+`test_http_phase4.py` is the repeatable end-to-end probe for the
+same (raw BOSH + raw-socket WebSocket clients, `curl`-equivalent
+HTTP calls, admin UI flows).
 
 ## Verified features
 
 Verified over the wire with real clients (raw sockets + slixmpp 1.17)
 on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
-`mix test` 42/42, probe `test_sm_carbons_csi.py` 36/36,
+`mix test` 56/56, probe `test_sm_carbons_csi.py` 36/36,
 probe `test_mam_pubsub.py` 47/47, probe
-`test_mam_pubsub_slix.py` 12/12:
+`test_mam_pubsub_slix.py` 12/12, probe `test_s2s.py` 17/17,
+probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46:
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
 * SASL PLAIN and **SCRAM-SHA-256** (RFC 5802, channel binding `n` and
@@ -217,14 +234,77 @@ probe `test_mam_pubsub.py` 47/47, probe
   race exists in ejabberd's send/receive hooks) — the probes space
   sends out to keep the expected order deterministic.
 
+
+* **HTTP stack (port 5280, plain `:gen_tcp`, zero new dependencies)**:
+  the stack decision is documented in `Exjabberd.Http.Server`:
+  BOSH long-polling and WebSocket framing need custom
+  per-connection processes anyway, so Plug/Bandit would add a Hex
+  dependency without removing any of the real work.
+* **Web admin (`/admin`)**: real login page — the password is
+  verified against the stored SCRAM verifier data and the user
+  must be listed in the `admin` ACL (wrong password → 401,
+  correct password for a non-admin user → 401); after login a
+  signed HttpOnly session cookie (HMAC-SHA256, 8 h) guards the
+  dashboard (uptime, registered-user count, online sessions,
+  loaded modules — all live numbers, cross-checked against the
+  REST API), the users page (list / create / delete / reset
+  password — a user created in the UI can log in over XMPP, a
+  deleted user cannot, and live sessions are closed on delete)
+  and the sessions page (every online session). No external
+  assets, no placeholder pages.
+* **REST API (`/api`, Bearer token from `http.api_token`)**:
+  `GET /api/status` (version, uptime, hosts, user/session
+  counts), user CRUD (`GET/POST /api/users`,
+  `GET/DELETE /api/users/:user`, `POST /api/users/:user/password`)
+  and `GET /api/sessions`; no token or a wrong token → 401.
+* **BOSH (XEP-0124 + XEP-0206, `/bosh` + `/http-bind`)**: session
+  creation returns `sid` + `wait`/`inactivity`/`polling`/
+  `requests`/`hold` + stream features; SASL PLAIN (and SCRAM, via
+  the shared transport), `xmpp:restart`, resource binding and
+  long-polling all work. A BOSH client and a TCP client exchange
+  messages both ways; a repeated `rid` replays the cached
+  response; unknown `sid` → 404; `type='terminate'` ends the
+  session.
+* **XMPP over WebSocket (RFC 7395, `/ws`, subprotocol `xmpp`)**:
+  RFC 6455 handshake + framing (masked client frames, text/binary/
+  continuation, ping → pong, close handshake) with a full XMPP
+  stream on top (stream open, auth, bind, messages, `<open/>`
+  framing also accepted). A WebSocket client and a TCP client
+  exchange messages both ways; a wrong subprotocol is rejected.
+* **HTTP File Upload (XEP-0363)**: IQ-set `<request filename size
+  content-type/>` → `<slot><put url/><get url/></slot>`; PUT
+  uploads the exact bytes (size and content-type verified) and
+  GET downloads byte-identical content (hash-checked); URLs are
+  HMAC-signed with an expiry (forged token → 403, unknown slot →
+  404, GET before upload → 404, oversize request →
+  `not-acceptable`); files live under `priv/uploads/` (gitignored)
+  as bare slot ids, so the client filename never touches the
+  filesystem; expired slots are swept periodically.
+* **Shared XMPP transport** (`Exjabberd.Http.XmppTransport`):
+  BOSH and WebSocket run the *same* session code as TCP (SASL,
+  bind, SM, CSI, IQ dispatch for roster/disco/MAM/PubSub/upload,
+  message/presence routing) by starting a `C2S` process with an
+  `out_pid` instead of a socket (`Exjabberd.C2S.set_out_pid/2` +
+  `sync/1` barrier so IQ replies reach the HTTP response).
+
+  Honest limits of this phase (not bugs, just not built yet):
+  no TLS on the HTTP listener (use a reverse proxy); no HTTP/2;
+  BOSH `hold` is fixed at 1 and only the last 5 responses are
+  kept for `rid` replay; Stream Management `<resume/>` across
+  BOSH/WebSocket connections is refused (`item-not-found` —
+  BOSH retransmits by `rid` instead, and a WebSocket reconnect
+  starts a fresh stream); upload has no per-user quota and no
+  virus scanning; the admin UI has no MUC/PubSub management
+  pages; the old stub `Exjabberd.Web.*` modules were deleted and
+  `Exjabberd.Web.handle/1` now delegates to the real router.
+
 ## Not implemented
 
 Honest list — these were claimed by the old code/config and are not
 there. Do not rely on them until they land:
 
-* **HTTP stack**: no web admin (5280), no BOSH (XEP-0206), no
-  WebSocket, no file upload (XEP-0363), no HTTP API. No
-  Plug/Cowboy/Bandit/Phoenix dependency.
+* **HTTP stack (remaining)**: no TLS HTTP listener (5443), no
+  captcha endpoint, no ACME challenge handling, no HTTP/2.
 * **STUN/TURN** (5478), **MQTT** (1883).
 * **MAM, PubSub, Jingle, OMEMO, MIX, PEP**: MAM and PubSub are
   implemented and verified (see above). Jingle, OMEMO, MIX and PEP
@@ -255,6 +335,20 @@ there. Do not rely on them until they land:
 * `lib/exjabberd/mod/stream_mgmt.ex` — XEP-0198 registry + config.
 * `lib/exjabberd/mod/carbons.ex` — XEP-0280 message carbons.
 * `lib/exjabberd/mod/csi.ex` — XEP-0352 policy + config.
+* `lib/exjabberd/http/server.ex` — plain-`:gen_tcp` HTTP listener
+  + request parser + router (admin / API / BOSH / upload).
+* `lib/exjabberd/http/xmpp_transport.ex` — one XMPP session over
+  BOSH/WebSocket (stream, SASL, bind, SM, CSI, IQ dispatch).
+* `lib/exjabberd/http/bosh.ex` — BOSH sessions (long-poll, rid
+  replay, inactivity) + `lib/exjabberd/http/websocket.ex` —
+  RFC 6455 framing + RFC 7395.
+* `lib/exjabberd/http/upload.ex` — XEP-0363 slot store, HMAC-signed
+  URLs, file storage + expiry sweep; `lib/exjabberd/http/admin.ex`
+  — web admin UI + signed session cookies;
+  `lib/exjabberd/http/api.ex` — REST API;
+  `lib/exjabberd/http/config.ex` — the `http:` config section.
+* `lib/exjabberd/core/c2s.ex` — now also supports non-TCP
+  transports via `out_pid` (`set_out_pid/2`, `sync/1`).
 * `lib/exjabberd/mod/mam.ex` — XEP-0313 archive store (Mnesia),
   prefs, archiving hooks.
 * `lib/exjabberd/mod/mam_query.ex` — XEP-0313 IQ handler

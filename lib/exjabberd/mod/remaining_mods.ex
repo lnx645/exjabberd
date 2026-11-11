@@ -309,41 +309,111 @@ defmodule Exjabberd.Mod.Fail2ban do
 end
 
 defmodule Exjabberd.Mod.HttpUpload do
-  @moduledoc "`mod_http_upload` (XEP-0363) (partial implementation). Issues PUT slots."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_upload_slots
-  @impl true
-  def start(_host, opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
+  @moduledoc """
+  `mod_http_upload` (XEP-0363) — real slot issuer.
 
-    max_size = Keyword.get(opts, :max_size, 10 * 1024 * 1024)
-    _ = max_size
+  Registers the IQ handler for `urn:xmpp:http:upload:0` and
+  advertises it in disco#info. A slot request
+  (`<request filename size content-type/>`) is answered with a
+  `<slot><put url/><get url/></slot>` whose URLs are HMAC-signed
+  and expire (see `Exjabberd.Http.Upload`); the actual PUT/GET
+  is served by the HTTP listener. `max_size` may be set in
+  `mod_http_upload:` options, but the `http.upload_max_size`
+  setting wins when both are present.
+  """
+  use Exjabberd.Mod.GenMod
+
+  @upload_ns "urn:xmpp:http:upload:0"
+
+  @impl true
+  def start(host, _opts) do
+    Exjabberd.Hooks.add(:disco_info, host, __MODULE__, :disco_info, 50)
+    Exjabberd.Iq.register(host, @upload_ns, __MODULE__, :handle_iq)
     :ok
   end
 
   @impl true
-  def stop(_host), do: :ok
-  @doc "Request slot."
+  def stop(host) do
+    Exjabberd.Hooks.delete(:disco_info, host, __MODULE__, :disco_info)
+    Exjabberd.Iq.unregister(host, @upload_ns, :both)
+    :ok
+  end
+
+  @doc false
+  def disco_info(acc, _host),
+    do: Map.update(acc, :features, [@upload_ns], &(&1 ++ [@upload_ns]))
+
+  @doc "Handle an upload slot request IQ."
+  @spec handle_iq(map(), binary()) :: {:ok, map()} | {:error, term()}
+  def handle_iq(%{type: "set"} = iq, host) do
+    request_el =
+      (iq.payload || [])
+      |> Enum.find(fn
+        %{name: "request", attrs: %{"xmlns" => @upload_ns}} -> true
+        _ -> false
+      end)
+
+    case request_el do
+      nil ->
+        {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+      %{attrs: attrs} ->
+        filename = Map.get(attrs, "filename", "")
+        content_type = Map.get(attrs, "content-type")
+        user = requester_user(iq)
+
+        case parse_size(Map.get(attrs, "size")) do
+          {:ok, size} ->
+            case Exjabberd.Http.Upload.request_slot(host, user, filename, size, content_type) do
+              {:ok, slot} ->
+                {:ok, %{iq | type: "result", payload: [slot_element(slot)]}}
+
+              {:error, :too_large} ->
+                {:error, :not_acceptable, Exjabberd.Iq.error_iq(iq, "not-acceptable")}
+
+              {:error, :bad_request} ->
+                {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+            end
+
+          :error ->
+            {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+        end
+    end
+  end
+
+  def handle_iq(iq, _host),
+    do: {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+  defp slot_element(slot) do
+    %{
+      name: "slot",
+      attrs: %{"xmlns" => @upload_ns},
+      children: [
+        %{name: "put", attrs: %{"url" => slot.put}, children: []},
+        %{name: "get", attrs: %{"url" => slot.get}, children: []}
+      ]
+    }
+  end
+
+  defp parse_size(nil), do: :error
+
+  defp parse_size(str) do
+    case Integer.parse(to_string(str)) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp requester_user(%{from: %Exjabberd.Xmpp.Jid{local: local}}) when is_binary(local), do: local
+  defp requester_user(%{from: from}) when is_binary(from), do: from |> String.split("@") |> hd()
+  defp requester_user(_), do: ""
+
+  @doc "Request slot (kept for callers of the old stub API)."
   def request_slot(host, user, filename, size, content_type) do
-    slot_id = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-    put_url = "https://#{host}/upload/#{slot_id}/#{filename}"
-    get_url = put_url
-
-    :ets.insert(
-      @table,
-      {{host, slot_id},
-       %{
-         user: user,
-         filename: filename,
-         size: size,
-         content_type: content_type,
-         ts: System.system_time(:second)
-       }}
-    )
-
-    {:ok, %{put: put_url, get: get_url}}
+    case Exjabberd.Http.Upload.request_slot(host, user, filename, size, content_type) do
+      {:ok, slot} -> {:ok, %{put: slot.put, get: slot.get}}
+      err -> err
+    end
   end
 end
 

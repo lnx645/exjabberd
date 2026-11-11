@@ -49,9 +49,9 @@ defmodule Exjabberd.Xmpp.Stream do
   @doc """
   Stream features after auth, as ONE wrapped `<stream:features>` string.
 
-  Only resource binding is advertised. `session` (RFC 3921, obsolete),
-  Stream Management (XEP-0198) and CSI (XEP-0352) are not implemented
-  and are deliberately not advertised.
+  Only resource binding is advertised here; Stream Management
+  (XEP-0198) and CSI (XEP-0352) are advertised by the codec's
+  feature registry instead (see `Exjabberd.Xmpp.Codec`).
   """
   @spec features_after_auth() :: [binary()]
   def features_after_auth do

@@ -153,6 +153,9 @@ modules:
   mod_blocking: {}
   mod_bosh: {}
   mod_caps: {}
+  mod_carboncopy: {}
+  mod_client_state:
+    max_queue: 100
   mod_configure: {}
   mod_disco: {}
   mod_fail2ban: {}
@@ -215,6 +218,9 @@ modules:
   mod_s2s_bidi: {}
   mod_s2s_dialback: {}
   mod_shared_roster: {}
+  mod_stream_mgmt:
+    max_ack_queue: 100
+    resume_timeout: 60
   mod_stun_disco: {}
   mod_vcard: {}
   mod_vcard_xupdate: {}
@@ -222,9 +228,9 @@ modules:
     show_os: false
 
 ## NOT IMPLEMENTED YET (kept here as a record, not started):
-##   mod_carboncopy    (XEP-0280 message carbons) — no implementation.
-##   mod_client_state  (XEP-0352 client state indication) — no implementation.
-##   mod_stream_mgmt   (XEP-0198 stream management) — no implementation.
+##   (XEP-0198 stream management, XEP-0280 message carbons and
+##   XEP-0352 client state indication are implemented now and listed
+##   in `modules:` above.)
 ## The server logs a warning and skips any module name it cannot resolve.
 
 ### Local Variables:

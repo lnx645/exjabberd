@@ -116,6 +116,7 @@ defmodule Exjabberd.Listener.C2S do
             authenticated: false,
             scram: nil,
             host: "localhost",
+            jid: nil,
             stream_open: false,
             max_size: max_stanza_size()
           })
@@ -137,6 +138,7 @@ defmodule Exjabberd.Listener.C2S do
         authenticated: false,
         scram: nil,
         host: "localhost",
+        jid: nil,
         stream_open: false,
         max_size: max_stanza_size()
       })
@@ -257,6 +259,24 @@ defmodule Exjabberd.Listener.C2S do
         # Stanzas before the stream open are a protocol violation.
         send_stream_error(state, "invalid-namespace", "Stanza before stream open")
         {:closed, state}
+
+      String.starts_with?(unit, "<enable") and attr(unit, "xmlns") == "urn:xmpp:sm:3" ->
+        handle_sm_enable(unit, state)
+
+      String.starts_with?(unit, "<resume") and attr(unit, "xmlns") == "urn:xmpp:sm:3" ->
+        handle_sm_resume(unit, state)
+
+      sm_nonza?(unit, "r") ->
+        handle_sm_request_ack(state)
+
+      sm_nonza?(unit, "a") ->
+        handle_sm_client_ack(unit, state)
+
+      String.starts_with?(unit, "<active") and attr(unit, "xmlns") == "urn:xmpp:csi:0" ->
+        handle_csi(state, :active)
+
+      String.starts_with?(unit, "<inactive") and attr(unit, "xmlns") == "urn:xmpp:csi:0" ->
+        handle_csi(state, :inactive)
 
       String.starts_with?(unit, "<iq") ->
         handle_iq(unit, state)
@@ -401,9 +421,158 @@ defmodule Exjabberd.Listener.C2S do
     {:ok, %{state | scram: nil}}
   end
 
+  # --- Stream Management (XEP-0198) + CSI (XEP-0352) nonzas ---
+
+  # `<enable/>`: the C2S process answers with `<enabled/>` or
+  # `<failed/>`; the reply is not a stanza, so it is written here.
+  defp handle_sm_enable(unit, state) do
+    resume? = attr(unit, "resume") in ["true", "1"]
+    client_max = parse_non_neg_int(attr(unit, "max"))
+
+    case Exjabberd.C2S.sm_enable(state.c2s, resume?, client_max) do
+      {:ok, xml} -> sock_send(state, xml)
+      {:error, xml} -> sock_send(state, xml)
+    end
+
+    {:ok, state}
+  end
+
+  # `<resume h previd/>` on a fresh stream (before or after auth).
+  # On success the old C2S process takes this socket over; this
+  # stream's fresh C2S process is stopped and the serve loop keeps
+  # going with the resumed session.
+  defp handle_sm_resume(unit, state) do
+    previd = attr(unit, "previd") || ""
+
+    case parse_non_neg_int(attr(unit, "h")) do
+      {:ok, h} ->
+        case Exjabberd.Mod.StreamMgmt.resume(state.host, previd, h, state.sock, state.kind) do
+          {:ok, old_pid, _replayed, full_jid} ->
+            stop_fresh_c2s(state.c2s)
+
+            jid =
+              case Jid.parse(full_jid) do
+                {:ok, parsed} -> parsed
+                _ -> state.jid
+              end
+
+            {:ok, %{state | c2s: old_pid, authenticated: true, jid: jid}}
+
+          {:error, reason} when reason in [:not_found, :superseded] ->
+            sock_send(state, Exjabberd.Mod.StreamMgmt.failed_xml("item-not-found"))
+            {:ok, state}
+
+          {:error, :count_too_high} ->
+            send_count_too_high(state)
+            {:closed, state}
+        end
+
+      :error ->
+        sock_send(state, Exjabberd.Mod.StreamMgmt.failed_xml("bad-request"))
+        {:ok, state}
+    end
+  end
+
+  # `<r/>`: answer with the number of stanzas handled so far.
+  defp handle_sm_request_ack(state) do
+    case Exjabberd.C2S.sm_request_ack(state.c2s) do
+      {:ok, xml} -> sock_send(state, xml)
+      {:error, :not_enabled} -> :ok
+    end
+
+    {:ok, state}
+  end
+
+  # `<a h='N'/>`: the client acked our outbound stanzas up to N.
+  defp handle_sm_client_ack(unit, state) do
+    case parse_non_neg_int(attr(unit, "h")) do
+      {:ok, h} ->
+        case Exjabberd.C2S.sm_client_ack(state.c2s, h) do
+          {:ok, _} ->
+            {:ok, state}
+
+          {:error, :count_too_high, got, sent} ->
+            # XEP-0198 §6: the client acked more than we ever sent.
+            send_count_too_high(state, got, sent)
+            {:closed, state}
+
+          {:error, _} ->
+            {:ok, state}
+        end
+
+      :error ->
+        {:ok, state}
+    end
+  end
+
+  # `<active/>` / `<inactive/>`: synchronous, so the CSI flush (on
+  # active) reaches the wire before any stanza that follows it in
+  # the same packet is answered (XEP-0352 §5.1).
+  defp handle_csi(state, csi_state) do
+    :ok = Exjabberd.C2S.csi_set(state.c2s, csi_state)
+    {:ok, state}
+  end
+
+  # True for a bare `<r/>` / `<a/>` SM nonza (tag + delimiter, so
+  # `<resume/>`, `<response/>` and `<active/>` do not match).
+  defp sm_nonza?(unit, tag) do
+    (String.starts_with?(unit, "<#{tag} ") or String.starts_with?(unit, "<#{tag}/>") or
+       String.starts_with?(unit, "<#{tag}>")) and
+      attr(unit, "xmlns") == "urn:xmpp:sm:3"
+  end
+
+  defp parse_non_neg_int(nil), do: :error
+
+  defp parse_non_neg_int(str) do
+    case Integer.parse(String.trim(str)) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp stop_fresh_c2s(pid) do
+    try do
+      GenServer.stop(pid, :normal)
+    catch
+      :exit, _ -> :ok
+    end
+
+    :ok
+  end
+
+  # XEP-0198 §6: the peer acked more stanzas than we sent.
+  defp send_count_too_high(state, got \\ nil, sent \\ nil) do
+    extra =
+      if is_integer(got) and is_integer(sent) do
+        "<handled-count-too-high xmlns='urn:xmpp:sm:3' h='#{got}' send-count='#{sent}'/>"
+      else
+        ""
+      end
+
+    sock_send(
+      state,
+      "<stream:error><undefined-condition xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>" <>
+        extra <>
+        "<text xmlns='urn:ietf:params:xml:ns:xmpp-streams' xml:lang='en'>Acknowledged more stanzas than sent</text>" <>
+        "</stream:error></stream:stream>"
+    )
+  end
+
   defp handle_iq(unit, state) do
     case Codec.decode(unit) do
       {:ok, stanza} ->
+        # Clients usually omit `from` on IQs; stamp the bound JID
+        # so handlers (carbons enable/disable, roster, ...) see the
+        # sender. Message/presence get the same treatment in C2S.
+        stanza =
+          if stanza.from == nil and state.jid != nil,
+            do: %{stanza | from: state.jid},
+            else: stanza
+
+        # Every stanza the client sends counts as handled, including
+        # IQs answered here instead of routed.
+        Exjabberd.C2S.sm_inbound(state.c2s)
+
         if bind_iq?(stanza) do
           handle_bind(stanza, state)
         else
@@ -445,8 +614,16 @@ defmodule Exjabberd.Listener.C2S do
             ]
           )
 
+        # Written directly (not via C2S.send_xml): the bind call
+        # itself fires `user_available`, which flushes offline
+        # messages into the C2S mailbox — if the result went through
+        # the mailbox too, the flush would overtake it on the wire
+        # and clients waiting for the bind result would see the
+        # offline messages first. Stream Management can never be
+        # enabled yet (it requires binding first), so nothing needs
+        # counting here.
         sock_send(state, Codec.encode(result))
-        {:ok, state}
+        {:ok, %{state | jid: jid}}
 
       err ->
         Logger.warning("bind fail #{inspect(err)}")
@@ -482,15 +659,21 @@ defmodule Exjabberd.Listener.C2S do
     if local? do
       case Exjabberd.Iq.dispatch(stanza, state.host) do
         {:ok, result} ->
-          sock_send(state, Codec.encode(result))
+          # Via C2S so Stream Management counts the reply and wire
+          # order against routed stanzas is kept.
+          Exjabberd.C2S.send_xml(state.c2s, Codec.encode(result))
           {:ok, state}
 
         {:error, _, err_iq} ->
-          sock_send(state, Codec.encode(err_iq))
+          Exjabberd.C2S.send_xml(state.c2s, Codec.encode(err_iq))
           {:ok, state}
 
         {:error, reason} ->
-          sock_send(state, Codec.encode(Exjabberd.Iq.error_iq(stanza, error_condition(reason))))
+          Exjabberd.C2S.send_xml(
+            state.c2s,
+            Codec.encode(Exjabberd.Iq.error_iq(stanza, error_condition(reason)))
+          )
+
           {:ok, state}
       end
     else
@@ -517,6 +700,8 @@ defmodule Exjabberd.Listener.C2S do
     case Codec.decode(unit) do
       {:ok, stanza} ->
         Exjabberd.C2S.send_stanza(state.c2s, stanza)
+        # Count the stanza as handled (XEP-0198 `h`).
+        Exjabberd.C2S.sm_inbound(state.c2s)
         {:ok, state}
 
       {:error, _} ->

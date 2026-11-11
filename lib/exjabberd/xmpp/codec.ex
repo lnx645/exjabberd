@@ -82,56 +82,61 @@ defmodule Exjabberd.Xmpp.Codec do
   @doc "Build stream features via handler registry (ejabberd `ejabberd_c2s:stream_features` tidak hardcode string)."
   @spec stream_features(binary(), keyword()) :: [element()]
   def stream_features(host, opts \\ []) do
-    # Kumpulkan dari Hooks `c2s_stream_features` — tiap feature (STARTTLS, SASL, bind) daftar sendiri
-    base = Exjabberd.Hooks.run_fold(:c2s_stream_features, host, [], opts)
-    # Fallback kalau belum ada yang daftar. Hanya fitur yang benar-benar
-    # diimplementasi yang diiklankan: STARTTLS (bila belum TLS), SASL
-    # PLAIN + SCRAM-SHA-256, dan resource binding setelah auth. SM, CSI,
-    # carbons dan SCRAM-SHA-1/512 TIDAK diiklankan karena belum ada.
-    if base == [] do
-      authenticated = Keyword.get(opts, :authenticated, false)
-      tls = Keyword.get(opts, :tls, false)
+    # Built-in features first (STARTTLS, SASL, bind — only the ones
+    # that actually apply to this stream stage), then anything extra
+    # a loaded module registered via the `c2s_stream_features` hook
+    # (stream management, CSI, carbons). The hook fold receives the
+    # options as ONE argument, so a handler is called as
+    # `feature(acc, host, opts)`.
+    base = builtin_features(opts)
+    Exjabberd.Hooks.run_fold(:c2s_stream_features, host, base, [opts])
+  end
 
-      sasl =
-        if authenticated do
-          []
-        else
-          [
-            %{
-              name: "mechanisms",
-              attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-sasl"},
-              children: [
-                %{name: "mechanism", attrs: %{}, children: ["PLAIN"]},
-                %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-256"]}
-              ]
-            }
-          ]
-        end
+  # The features that are always available, depending on the stream
+  # stage. Only features that are really implemented are advertised:
+  # STARTTLS (when not on TLS yet), SASL PLAIN + SCRAM-SHA-256, and
+  # resource binding after auth.
+  defp builtin_features(opts) do
+    authenticated = Keyword.get(opts, :authenticated, false)
+    tls = Keyword.get(opts, :tls, false)
 
-      bind =
-        if authenticated do
-          [%{name: "bind", attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-bind"}, children: []}]
-        else
-          []
-        end
+    sasl =
+      if authenticated do
+        []
+      else
+        [
+          %{
+            name: "mechanisms",
+            attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-sasl"},
+            children: [
+              %{name: "mechanism", attrs: %{}, children: ["PLAIN"]},
+              %{name: "mechanism", attrs: %{}, children: ["SCRAM-SHA-256"]}
+            ]
+          }
+        ]
+      end
 
-      tls_el =
-        if authenticated or tls do
-          []
-        else
-          [
-            %{
-              name: "starttls",
-              attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-tls"},
-              children: []
-            }
-          ]
-        end
+    bind =
+      if authenticated do
+        [%{name: "bind", attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-bind"}, children: []}]
+      else
+        []
+      end
 
-      tls_el ++ sasl ++ bind
-    else
-      base
-    end
+    tls_el =
+      if authenticated or tls do
+        []
+      else
+        [
+          %{
+            name: "starttls",
+            attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-tls"},
+            children: []
+          }
+        ]
+      end
+
+    tls_el ++ sasl ++ bind
   end
 
   @doc "Encode stream features list to XML (ejabberd `xmpp:encode_stream_features`)."
@@ -479,12 +484,28 @@ defmodule Exjabberd.Xmpp.Feature do
   @doc "Daftar semua fitur untuk host (dipanggil Codec.stream_features)."
   @spec announce(binary(), keyword()) :: [map()]
   def announce(host, opts) do
-    Exjabberd.Hooks.run_fold(:c2s_stream_features, host, [], opts)
+    Exjabberd.Hooks.run_fold(:c2s_stream_features, host, [], [opts])
+  end
+
+  # Register a feature handler once (a module started twice must not
+  # advertise the same feature twice).
+  defp ensure_feature(host, fun, priority) do
+    already? =
+      Enum.any?(Exjabberd.Hooks.list(:c2s_stream_features, host), fn
+        {__MODULE__, ^fun, _} -> true
+        _ -> false
+      end)
+
+    if already? do
+      :ok
+    else
+      Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, fun, priority)
+    end
   end
 
   @doc "Register STARTTLS feature (ejabberd `starttls`)."
   def register_starttls(host) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :starttls_feature, 10)
+    ensure_feature(host, :starttls_feature, 10)
   end
 
   @doc false
@@ -495,7 +516,7 @@ defmodule Exjabberd.Xmpp.Feature do
 
   @doc "Register SASL feature."
   def register_sasl(host, mechs \\ ["PLAIN", "SCRAM-SHA-256"]) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :sasl_feature, 20)
+    ensure_feature(host, :sasl_feature, 20)
     _ = mechs
     :ok
   end
@@ -517,7 +538,7 @@ defmodule Exjabberd.Xmpp.Feature do
 
   @doc "Register bind feature (RFC 6120 §7)."
   def register_bind(host) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :bind_feature, 30)
+    ensure_feature(host, :bind_feature, 30)
   end
 
   @doc false
@@ -532,31 +553,37 @@ defmodule Exjabberd.Xmpp.Feature do
 
   @doc "Register Stream Management (XEP-0198)."
   def register_sm(host) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :sm_feature, 40)
+    ensure_feature(host, :sm_feature, 40)
   end
 
   @doc false
-  def sm_feature(acc, _host, opts \\ nil) do
+  # Advertised on every stream, not only after auth: a client that
+  # lost its connection needs to see the feature on the fresh stream
+  # to know it may send <resume/> without authenticating first.
+  # <enable/> itself is still refused before resource binding.
+  def sm_feature(acc, _host, _opts \\ nil) do
+    acc ++ [%{name: "sm", attrs: %{"xmlns" => "urn:xmpp:sm:3"}, children: []}]
+  end
+
+  @doc "Register CSI (XEP-0352)."
+  def register_csi(host) do
+    ensure_feature(host, :csi_feature, 50)
+  end
+
+  @doc false
+  # XEP-0352 §4.1: advertised in the stream features after the
+  # client has authenticated.
+  def csi_feature(acc, _host, opts \\ nil) do
     if Keyword.get(opts || [], :authenticated, false) do
-      acc ++ [%{name: "sm", attrs: %{"xmlns" => "urn:xmpp:sm:3"}, children: []}]
+      acc ++ [%{name: "csi", attrs: %{"xmlns" => "urn:xmpp:csi:0"}, children: []}]
     else
       acc
     end
   end
 
-  @doc "Register CSI (XEP-0352)."
-  def register_csi(host) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :csi_feature, 50)
-  end
-
-  @doc false
-  def csi_feature(acc, _host, _opts \\ nil) do
-    acc ++ [%{name: "csi", attrs: %{"xmlns" => "urn:xmpp:csi:0"}, children: []}]
-  end
-
   @doc "Register Carbons (XEP-0280)."
   def register_carbons(host) do
-    Exjabberd.Hooks.add(:c2s_stream_features, host, __MODULE__, :carbons_feature, 60)
+    ensure_feature(host, :carbons_feature, 60)
   end
 
   @doc false

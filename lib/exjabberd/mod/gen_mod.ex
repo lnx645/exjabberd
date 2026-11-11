@@ -214,6 +214,8 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_blocking" => %{},
       "mod_bosh" => %{},
       "mod_caps" => %{},
+      "mod_carboncopy" => %{},
+      "mod_client_state" => %{max_queue: 100},
       "mod_configure" => %{},
       "mod_disco" => %{},
       "mod_fail2ban" => %{},
@@ -237,7 +239,7 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_s2s_bidi" => %{},
       "mod_s2s_dialback" => %{},
       "mod_shared_roster" => %{},
-      "mod_stream_mgmt" => %{},
+      "mod_stream_mgmt" => %{max_ack_queue: 100, resume_timeout: 60},
       "mod_stun_disco" => %{},
       "mod_time" => %{},
       "mod_vcard" => %{},
@@ -256,6 +258,8 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_blocking"), do: Exjabberd.Mod.Blocking
   def module_for("mod_bosh"), do: Exjabberd.Mod.Bosh
   def module_for("mod_caps"), do: Exjabberd.Mod.Caps
+  def module_for("mod_carboncopy"), do: Exjabberd.Mod.Carbons
+  def module_for("mod_client_state"), do: Exjabberd.Mod.Csi
   def module_for("mod_configure"), do: Exjabberd.Mod.Configure
   def module_for("mod_disco"), do: Exjabberd.Mod.Disco
   def module_for("mod_fail2ban"), do: Exjabberd.Mod.Fail2ban
@@ -279,14 +283,13 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_s2s_bidi"), do: Exjabberd.Mod.S2sBidi
   def module_for("mod_s2s_dialback"), do: Exjabberd.Mod.S2S
   def module_for("mod_shared_roster"), do: Exjabberd.Mod.SharedRoster
+  def module_for("mod_stream_mgmt"), do: Exjabberd.Mod.StreamMgmt
   def module_for("mod_stun_disco"), do: Exjabberd.Mod.StunDispatch
   def module_for("mod_time"), do: Exjabberd.Mod.Time
   def module_for("mod_vcard"), do: Exjabberd.Mod.Vcard
   def module_for("mod_vcard_xupdate"), do: Exjabberd.Mod.VcardXupdate
   def module_for("mod_version"), do: Exjabberd.Mod.Version
-  # Implemented modules with no counterpart in exjabberd.yml's list:
-  # mod_carboncopy, mod_client_state (CSI) and mod_stream_mgmt (XEP-0198)
-  # have no Elixir module yet and are skipped with a warning.
+  # Every name in `modules:` now resolves to a real module.
   def module_for(_), do: nil
 
   # YAML options arrive as string-keyed maps (or nil for `mod_foo: {}`).

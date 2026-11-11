@@ -1,0 +1,10 @@
+/_build/
+/deps/
+/doc/
+*.beam
+*.plt
+.elixir_ls/
+.idea/
+.DS_Store
+/priv/*.log
+/tmp/

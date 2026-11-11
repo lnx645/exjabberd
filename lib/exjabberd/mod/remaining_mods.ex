@@ -604,37 +604,41 @@ defmodule Exjabberd.Mod.RosterVersioning do
 end
 
 defmodule Exjabberd.Mod.S2S do
-  @moduledoc "`mod_s2s_dialback` (partial implementation). Verifies dialback keys."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_s2s_dialback
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
+  @moduledoc """
+  `mod_s2s_dialback` (XEP-0220 Server Dialback).
 
-    :ok
-  end
+  Thin wrapper over `Exjabberd.S2S.Dialback`: keys are deterministic
+  HMAC-SHA256 values bound to (secret, stream ID, domain pair), so no
+  key storage is needed — the Authoritative Server recomputes the key
+  from its own secret. (The previous implementation generated a
+  random key per call and kept it in ETS, which could never be
+  verified by another server; it was not real dialback.)
+  """
+  use Exjabberd.Mod.GenMod
+
+  @impl true
+  def start(_host, _opts), do: :ok
 
   @impl true
   def stop(_host), do: :ok
-  @doc "Generate dialback key."
-  def generate(host, from, to) do
-    key =
-      :crypto.hash(:sha256, "#{host}#{from}#{to}#{:erlang.system_time()}")
-      |> Base.encode16(case: :lower)
 
-    :ets.insert(@table, {{host, from, to}, key})
-    {:ok, key}
+  @doc """
+  Generate a dialback key for (`stream_id`, `from`, `to`) with this
+  server's configured secret. `from` is the Sender/initiating
+  domain, `to` the Target/receiving domain.
+  """
+  @spec generate(binary(), binary(), binary()) :: {:ok, binary()}
+  def generate(stream_id, from, to) do
+    {:ok, Exjabberd.S2S.Dialback.generate_key(secret(), stream_id, from, to)}
   end
 
-  @doc "Verify dialback."
-  def verify(host, from, to, key) do
-    case :ets.lookup(@table, {host, from, to}) do
-      [{{_, _, _}, ^key}] -> true
-      _ -> false
-    end
+  @doc "Verify a dialback key for (`stream_id`, `from`, `to`)."
+  @spec verify(binary(), binary(), binary(), binary()) :: boolean()
+  def verify(stream_id, from, to, key) do
+    Exjabberd.S2S.Dialback.verify_key(secret(), stream_id, from, to, key)
   end
+
+  defp secret, do: Exjabberd.S2S.Dialback.secret()
 end
 
 defmodule Exjabberd.Mod.SharedRoster do

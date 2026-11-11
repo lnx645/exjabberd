@@ -156,6 +156,55 @@ probe `test_mam_pubsub.py` 47/47, probe
   `<message type='headline'>` event notifications with the item
   payload. Node `max_items` is enforced (oldest dropped first).
   Duplicate create → `conflict`; unknown node → `item-not-found`.
+* **Server-to-Server / federation (RFC 6120 §4, XEP-0220 Server
+  Dialback, port 5269)**: inbound S2S listener (`jabber:server`
+  streams, features advertise STARTTLS + dialback) and one
+  outbound connection per remote domain, reused across stanzas.
+  Dialback in both directions — initiating side sends
+  `<db:result/>` with an HMAC-SHA256 key
+  (`HMAC-SHA256(hex(SHA256(secret)), "to from stream-id")`, verified
+  against both worked examples in XEP-0220 v0.15), receiving side
+  verifies it by opening a dialback connection to the Authoritative
+  Server for the asserted domain and answering `<db:result
+  type='valid'|'invalid'/>`, and every server answers
+  `<db:verify/>` as Authoritative Server from its own secret.
+  STARTTLS on S2S (TLS 1.2/1.3, same dev certificate as C2S);
+  the feature disappears after the upgrade so a peer never asks
+  for TLS twice. Stanzas flow only over dialback-verified
+  connections and only from the verified domain; a forged key is
+  answered `invalid`, the stream is closed, and no stanza leaks.
+  Messages / directed presence / IQ (incl. disco#info to the remote
+  server domain, answered back over the reverse connection) all
+  federate. A stanza to an unreachable domain is bounced to its
+  sender as `<remote-server-not-found/>` — never silently dropped
+  (a failed outbound connection lingers briefly in `:failed`,
+  bouncing arrivals, instead of losing stanzas that were sent
+  while it was dying). Domain resolution: `s2s_host_overrides`
+  in `exjabberd.yml` first (domain → host/port, for tests and
+  DNS-less deployments), then DNS SRV `_xmpp-server._tcp`, then
+  A/AAAA on 5269. The dialback secret comes from
+  `s2s_dialback_secret` in `exjabberd.yml`; when absent the server
+  generates a random ephemeral secret at boot (logged as a
+  warning). Listeners are now started from the config's `listen:`
+  list (C2S plain/TLS + S2S inbound), and a client that opens a
+  stream to a non-default host is bound under that host (before,
+  every session was `user@localhost`, which broke federation).
+
+  Honest limits of this phase (not bugs, just not built yet):
+  no SASL EXTERNAL for S2S and no bidirectional streams (XEP-0288)
+  — federation uses one dialback-verified connection per direction;
+  the dialback verify connection is plain TCP (XEP-0220 allows
+  verify-only connections without TLS), so a peer with
+  `s2s_use_starttls: required` cannot be verified that way; TLS
+  peer verification is off (`verify_none`, self-signed dev
+  certificate) — production needs a real certificate and domain
+  check (RFC 6120 §5.4.2); S2S uses the first configured host as
+  the sender domain (multi-host sender selection is not done);
+  the sandbox DNS resolver answers for every name, so a negative
+  DNS test is meaningless there — the unreachable-domain probe uses
+  a configured override to a closed port instead. Two-node proof:
+  `test_s2s.py` 17/17 and `test_s2s_slix.py` 4/4 (two live nodes,
+  `a.localhost` ↔ `b.localhost`).
 
   Honest limits of this phase (not bugs, just not built yet):
   collection nodes are rejected (`bad-request`); `access_model`
@@ -173,8 +222,6 @@ probe `test_mam_pubsub.py` 47/47, probe
 Honest list — these were claimed by the old code/config and are not
 there. Do not rely on them until they land:
 
-* **S2S / federation** (port 5269): no S2S listener; `S2S` module is a
-  stub. Messages to remote domains are queued and dropped.
 * **HTTP stack**: no web admin (5280), no BOSH (XEP-0206), no
   WebSocket, no file upload (XEP-0363), no HTTP API. No
   Plug/Cowboy/Bandit/Phoenix dependency.
@@ -195,6 +242,12 @@ there. Do not rely on them until they land:
 
 * `lib/exjabberd/listener/c2s_listener.ex` — TCP accept loop, stream
   parser, SASL, STARTTLS, IQ dispatch.
+* `lib/exjabberd/listener/s2s_listener.ex` — inbound S2S accept loop,
+  server streams, STARTTLS, dialback receive/verify, stanza gate.
+* `lib/exjabberd/core/s2s.ex` — S2S manager + outbound connection
+  (connect, STARTTLS, dialback, queue, bounce on failure).
+* `lib/exjabberd/core/s2s_dialback.ex` — XEP-0220 key generation /
+  verification + the dialback verify connection.
 * `lib/exjabberd/xmpp/stream_parser.ex` — incremental stanza splitter.
 * `lib/exjabberd/auth/scram.ex` — SCRAM-SHA-256 (RFC 5802).
 * `lib/exjabberd/tls.ex` — self-signed dev certificate.

@@ -222,15 +222,21 @@ defmodule Exjabberd.C2S do
   end
 
   def handle_call({:open_stream, from, to}, _from, state) do
+    # The stream's `to` is the domain the client addressed — that is
+    # this connection's host from here on (authentication, JID
+    # construction, feature hooks and module lookups all key on it).
+    # Without this, a client connecting to a non-default host would
+    # be bound as user@localhost and federation would break.
+    host = if is_binary(to) and to != "", do: to, else: state.host
     header = Stream.open_header(from, to, state.stream_id)
 
     features =
-      Codec.stream_features(state.host,
+      Codec.stream_features(host,
         authenticated: state.authenticated,
         tls: state.tls
       )
 
-    {:reply, {:ok, header <> Codec.encode_stream_features(features)}, state}
+    {:reply, {:ok, header <> Codec.encode_stream_features(features)}, %{state | host: host}}
   end
 
   # --- Stream Management (XEP-0198) ---

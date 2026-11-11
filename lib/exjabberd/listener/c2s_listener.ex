@@ -40,6 +40,7 @@ defmodule Exjabberd.Listener.C2S do
   def init(opts) do
     port = Keyword.get(opts, :port, 5222)
     tls = Keyword.get(opts, :tls, false)
+    host = Keyword.get(opts, :host, "localhost")
 
     cert =
       if tls do
@@ -59,19 +60,19 @@ defmodule Exjabberd.Listener.C2S do
       :gen_tcp.listen(port, [:binary, packet: 0, active: false, reuseaddr: true, backlog: 128])
 
     Logger.info(
-      "exjabberd C2S listening real on 0.0.0.0:#{port}#{if tls, do: " (direct TLS)", else: ""}"
+      "exjabberd C2S listening real on 0.0.0.0:#{port}#{if tls, do: " (direct TLS)", else: ""} (host #{host})"
     )
 
     send(self(), :accept)
-    {:ok, %{ls: ls, port: port, tls: tls, cert: cert}}
+    {:ok, %{ls: ls, port: port, tls: tls, cert: cert, host: host}}
   end
 
   @impl true
   def handle_info(:accept, %{ls: ls} = s) do
     case :gen_tcp.accept(ls, 1000) do
       {:ok, sock} ->
-        {:ok, c2s} = Exjabberd.C2S.start_link(host: "localhost")
-        pid = spawn_link(fn -> serve(sock, c2s, s.tls, s.cert) end)
+        {:ok, c2s} = Exjabberd.C2S.start_link(host: s.host)
+        pid = spawn_link(fn -> serve(sock, c2s, s.tls, s.cert, s.host) end)
         # :ssl.connect (STARTTLS / direct TLS) requires the calling
         # process to own the socket — hand it to the serve process
         # before it reads anything.
@@ -92,7 +93,7 @@ defmodule Exjabberd.Listener.C2S do
 
   # --- per-connection serve loop ---
 
-  defp serve(sock, c2s, tls, _cert) do
+  defp serve(sock, c2s, tls, _cert, host) do
     # Wait until the acceptor has transferred socket ownership to us
     # (needed for :ssl.connect); the transfer always precedes this
     # message, so the timeout is only a safety net.
@@ -115,7 +116,7 @@ defmodule Exjabberd.Listener.C2S do
             tls: false,
             authenticated: false,
             scram: nil,
-            host: "localhost",
+            host: host,
             jid: nil,
             stream_open: false,
             max_size: max_stanza_size()
@@ -137,7 +138,7 @@ defmodule Exjabberd.Listener.C2S do
         tls: false,
         authenticated: false,
         scram: nil,
-        host: "localhost",
+        host: host,
         jid: nil,
         stream_open: false,
         max_size: max_stanza_size()

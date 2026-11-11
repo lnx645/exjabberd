@@ -46,10 +46,14 @@ listen:
     shaper: c2s_shaper
     access: c2s
     tls: true
+  -
+    port: 5269
+    ip: "::"
+    module: exjabberd_s2s_in
+    max_stanza_size: 262144
+    shaper: s2s_shaper
 ## NOT IMPLEMENTED (removed from the active listen list on purpose —
 ## the old file claimed these ports, but nothing ever listened on them):
-##   5269  S2S inbound (exjabberd_s2s_in) — no S2S listener exists, and
-##         federation to other servers is not implemented.
 ##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — there is
 ##         no HTTP stack (no Plug/Cowboy/Bandit/Phoenix dependency).
 ##         BOSH (XEP-0206), file upload (XEP-0363) and the web admin
@@ -61,6 +65,19 @@ listen:
     backlog: 1000
 
 s2s_use_starttls: optional
+
+# Dialback secret (XEP-0220): shared by every server in this
+# administrative domain; keys are HMAC-SHA256 over it. When absent,
+# the server generates a random ephemeral secret at boot (logged as
+# a warning). NEVER commit a production secret to version control.
+# s2s_dialback_secret: "change-me-to-a-long-random-secret"
+
+# Map a domain to a host/port without DNS (SRV _xmpp-server._tcp,
+# then A/AAAA on 5269, is used otherwise).
+# s2s_host_overrides:
+#   example.com:
+#     host: 127.0.0.1
+#     port: 5269
 
 acl:
   local:

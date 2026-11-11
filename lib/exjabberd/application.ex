@@ -14,8 +14,10 @@ defmodule Exjabberd.Application do
      defaults.
   3. Core GenServers (Config, Hooks, Router, SessionManager, Cluster,
      S2S, Iq, ListenerSupervisor, Mod.Supervisor, Auth.Mnesia).
-  4. The C2S listener (port 5222) — plus direct-TLS 5223 when the
-     config enables it.
+  4. Listeners from the config's `listen:` list — C2S (plain and
+     direct-TLS) plus the S2S inbound listener (port 5269). With no
+     `listen:` entries at all, a plain C2S listener on 5222 is started
+     so the test environment (no config file) still boots.
   5. `Exjabberd.Mod.Supervisor.start_all/1` for every configured host —
      modules are plain Elixir modules started with `mod.start(host, opts)`
      directly, not as supervisor children (their `start/2` returns
@@ -39,8 +41,7 @@ defmodule Exjabberd.Application do
       {Exjabberd.ListenerSupervisor, []},
       {Exjabberd.Mod.Supervisor, []},
       {Exjabberd.Mod.Muc.Supervisor, []},
-      {Exjabberd.Auth.Mnesia, []},
-      {Exjabberd.Listener.C2S, [port: 5222]}
+      {Exjabberd.Auth.Mnesia, []}
     ]
 
     opts = [strategy: :one_for_one, name: Exjabberd.Supervisor]
@@ -70,21 +71,15 @@ defmodule Exjabberd.Application do
       end
     end
 
-    # Direct-TLS C2S (port 5223) when the config's `listen:` enables it.
-    tls_c2s =
-      Enum.any?(Exjabberd.Config.listen(), fn entry ->
-        Map.get(entry, "port") == 5223 and Map.get(entry, "tls") == true
-      end)
+    # Dialback needs a secret: use the configured one, or generate a
+    # random ephemeral secret for this boot (a restart then
+    # invalidates only in-flight dialback exchanges, which the peer
+    # retries — see Exjabberd.S2S.Dialback).
+    ensure_dialback_secret()
 
-    if tls_c2s do
-      case DynamicSupervisor.start_child(
-             Exjabberd.ListenerSupervisor,
-             {Exjabberd.Listener.C2S, [port: 5223, tls: true, name: Exjabberd.Listener.C2S.TLS]}
-           ) do
-        {:ok, _} -> Logger.info("exjabberd direct-TLS C2S on 5223")
-        {:error, reason} -> Logger.warning("direct-TLS C2S failed: #{inspect(reason)}")
-      end
-    end
+    # Listeners from the config's `listen:` list (C2S plain/TLS and
+    # S2S inbound). No `listen:` entries → plain C2S on 5222.
+    start_listeners()
 
     # Start the configured modules for every host.
     for host <- Exjabberd.Config.hosts() do
@@ -92,6 +87,69 @@ defmodule Exjabberd.Application do
     end
 
     {:ok, sup}
+  end
+
+  defp ensure_dialback_secret do
+    case Exjabberd.Config.dialback_secret() do
+      secret when is_binary(secret) and secret != "" ->
+        :ok
+
+      _ ->
+        generated = :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
+        :ok = Exjabberd.Config.set(:global, :s2s_dialback_secret, generated)
+
+        Logger.warning(
+          "s2s_dialback_secret is not configured; generated an ephemeral secret for this boot " <>
+            "(set s2s_dialback_secret in exjabberd.yml for a stable one)"
+        )
+
+        :ok
+    end
+  end
+
+  defp start_listeners do
+    host = List.first(Exjabberd.Config.hosts()) || "localhost"
+
+    entries =
+      case Exjabberd.Config.listen() do
+        [] -> [%{"port" => 5222, "module" => "exjabberd_c2s"}]
+        list -> list
+      end
+
+    Enum.each(entries, fn entry ->
+      port = Map.get(entry, "port")
+      module = Map.get(entry, "module")
+
+      cond do
+        not is_integer(port) ->
+          Logger.warning("listen entry without a port, skipped: #{inspect(entry)}")
+
+        module == "exjabberd_c2s" ->
+          tls = Map.get(entry, "tls") == true
+          name = if tls, do: Exjabberd.Listener.C2S.TLS, else: Exjabberd.Listener.C2S
+
+          start_listener(
+            {Exjabberd.Listener.C2S, [port: port, tls: tls, host: host, name: name]},
+            "C2S on #{port}#{if tls, do: " (direct TLS)", else: ""}"
+          )
+
+        module == "exjabberd_s2s_in" ->
+          start_listener(
+            {Exjabberd.Listener.S2S, [port: port, host: host]},
+            "S2S on #{port}"
+          )
+
+        true ->
+          Logger.warning("listen entry with unknown module #{inspect(module)}, skipped")
+      end
+    end)
+  end
+
+  defp start_listener(child, label) do
+    case DynamicSupervisor.start_child(Exjabberd.ListenerSupervisor, child) do
+      {:ok, _} -> Logger.info("exjabberd listener started: #{label}")
+      {:error, reason} -> Logger.warning("listener #{label} failed: #{inspect(reason)}")
+    end
   end
 end
 

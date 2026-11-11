@@ -88,8 +88,65 @@ defmodule Exjabberd.Config do
   @spec listen() :: [map()]
   def listen, do: get("global", :listen, [])
 
+  @doc "STARTTLS policy for outbound S2S (`:optional` | `:required` | `:disabled`)."
+  @spec s2s_use_starttls() :: atom()
+  def s2s_use_starttls, do: get("global", :s2s_use_starttls, :optional)
+
+  @doc "Configured dialback secret (`s2s_dialback_secret`), or nil when unconfigured."
+  @spec dialback_secret() :: binary() | nil
+  def dialback_secret, do: get("global", :s2s_dialback_secret, nil)
+
+  @doc """
+  Configured S2S host overrides: `%{domain => {host, port}}`.
+
+  Lets a deployment map a domain to a host/port without DNS (used
+  by the two-node test setup); empty when unconfigured.
+  """
+  @spec s2s_host_overrides() :: map()
+  def s2s_host_overrides, do: get("global", :s2s_host_overrides, %{})
+
   defp normalize_key(k) when is_binary(k), do: String.to_atom(k)
   defp normalize_key(k) when is_atom(k), do: k
+
+  # `s2s_host_overrides:` YAML → `%{domain => {host, port}}`.
+  # Accepts a `{host:, port:}` map per domain, or a `"host:port"`
+  # string. Anything else is dropped with a warning.
+  defp normalize_host_overrides(overrides) when is_map(overrides) do
+    Enum.reduce(overrides, %{}, fn {domain, target}, acc ->
+      domain = domain |> to_string() |> String.downcase()
+
+      case normalize_override_target(target) do
+        {:ok, pair} -> Map.put(acc, domain, pair)
+        :error -> Logger.warning("config s2s_host_overrides #{domain}: ignored #{inspect(target)}"); acc
+      end
+    end)
+  end
+
+  defp normalize_host_overrides(_), do: %{}
+
+  defp normalize_override_target(%{"host" => host, "port" => port})
+       when is_integer(port) do
+    {:ok, {to_string(host), port}}
+  end
+
+  defp normalize_override_target(%{host: host, port: port}) when is_integer(port) do
+    {:ok, {to_string(host), port}}
+  end
+
+  defp normalize_override_target(target) when is_binary(target) do
+    case String.split(target, ":") do
+      [host, port_s] ->
+        case Integer.parse(port_s) do
+          {port, ""} when port > 0 -> {:ok, {host, port}}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp normalize_override_target(_), do: :error
 
   @impl true
   def handle_call({:get, host, key, default}, _from, state) do
@@ -123,19 +180,51 @@ defmodule Exjabberd.Config do
     shaper = Map.get(data, "shaper", Map.get(data, :shaper, %{}))
     modules = Map.get(data, "modules", Map.get(data, :modules, %{}))
 
+    s2s_use_starttls =
+      case Map.get(data, "s2s_use_starttls", Map.get(data, :s2s_use_starttls, "optional")) do
+        value when value in ["optional", :optional] -> :optional
+        value when value in ["required", :required] -> :required
+        value when value in ["disabled", :disabled] -> :disabled
+        other -> Logger.warning("config s2s_use_starttls: unknown #{inspect(other)}, using :optional"); :optional
+      end
+
+    s2s_dialback_secret =
+      case Map.get(data, "s2s_dialback_secret", Map.get(data, :s2s_dialback_secret)) do
+        secret when is_binary(secret) and secret != "" -> secret
+        _ -> nil
+      end
+
+    s2s_host_overrides =
+      normalize_host_overrides(
+        Map.get(data, "s2s_host_overrides", Map.get(data, :s2s_host_overrides, %{}))
+      )
+
+    # The configured `hosts:` list is authoritative: the initial
+    # state carries a placeholder "localhost" entry, which must go
+    # when the file names other hosts — otherwise `hosts()` would
+    # return both, modules would start twice, and "first host"
+    # lookups (C2S host, S2S sender domain) would be a coin toss.
+    fresh = Map.take(state, [:global])
+
     new_state =
-      Enum.reduce(hosts, state, fn h, acc ->
+      Enum.reduce(hosts, fresh, fn h, acc ->
+        # `Access.key/2`: a host that is not "localhost" has no entry
+        # in the initial state yet — plain `put_in([h, ...])` would
+        # raise "could not put/update key on a nil value".
         acc
-        |> put_in([h, :log_level], loglevel)
-        |> put_in([h, :hosts], hosts)
-        |> put_in([h, :acl], acl)
-        |> put_in([h, :access_rules], access_rules)
-        |> put_in([h, :shaper], shaper)
-        |> put_in([h, :modules], modules)
+        |> put_in([Access.key(h, %{}), :log_level], loglevel)
+        |> put_in([Access.key(h, %{}), :hosts], hosts)
+        |> put_in([Access.key(h, %{}), :acl], acl)
+        |> put_in([Access.key(h, %{}), :access_rules], access_rules)
+        |> put_in([Access.key(h, %{}), :shaper], shaper)
+        |> put_in([Access.key(h, %{}), :modules], modules)
       end)
       |> put_in([:global, :listen], listen)
       |> put_in([:global, :acl], acl)
       |> put_in([:global, :access_rules], access_rules)
+      |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
+      |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
+      |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
 
     # Validate via Options like ejabberd does
     Enum.each(hosts, fn h ->

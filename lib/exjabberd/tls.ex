@@ -36,6 +36,19 @@ defmodule Exjabberd.Tls do
     ]
   end
 
+  @doc """
+  `:ssl` client options for outbound STARTTLS (S2S).
+
+  Dev certificates here are self-signed, so verification is off —
+  the same trust model as the C2S server side. Production S2S to
+  real domains must verify the peer certificate against a real CA
+  and check the domain (RFC 6120 §5.4.2); see the README.
+  """
+  @spec ssl_client_opts() :: keyword()
+  def ssl_client_opts do
+    [verify: :verify_none, versions: [:"tlsv1.2", :"tlsv1.3"]]
+  end
+
   defp cert_dir do
     case :code.priv_dir(:exjabberd) do
       {:error, _} -> Path.join(File.cwd!(), "priv/ssl")

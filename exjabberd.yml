@@ -177,6 +177,8 @@ modules:
     ## db_type: sql
     assume_mam_usage: true
     default: always
+    # Maximum archived messages kept per user (oldest dropped first).
+    max_archive_size: 500
   mod_mqtt: {}
   mod_muc:
     access:
@@ -222,6 +224,7 @@ modules:
     max_ack_queue: 100
     resume_timeout: 60
   mod_stun_disco: {}
+  mod_time: {}
   mod_vcard: {}
   mod_vcard_xupdate: {}
   mod_version:

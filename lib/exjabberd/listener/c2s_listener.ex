@@ -654,7 +654,8 @@ defmodule Exjabberd.Listener.C2S do
 
     local? =
       is_nil(to_domain) or Exjabberd.Router.my_host?(to_domain) or
-        Exjabberd.Router.conference_domain?(to_domain)
+        Exjabberd.Router.conference_domain?(to_domain) or
+        Exjabberd.Router.pubsub_domain?(to_domain)
 
     if local? do
       case Exjabberd.Iq.dispatch(stanza, state.host) do

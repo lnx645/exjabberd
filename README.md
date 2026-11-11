@@ -23,14 +23,16 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd" mix run --no-halt
 ```
 
 Listens on TCP **5222** (C2S, STARTTLS optional) and, when
-`config/exjabberd.yml` enables it, **5223** (direct TLS C2S).
+`exjabberd.yml` enables it, **5223** (direct TLS C2S).
 The TLS certificate is self-signed for `localhost`, generated on first
 use into `priv/ssl/` (gitignored). Production deployments must use a
 real certificate for the server domain instead.
 
-Configuration lives in `config/exjabberd.yml` (hosts, `listen:`, `modules:`).
-Only listeners and modules that are actually implemented are listed
-there; the file documents what is missing in commented blocks.
+Configuration lives in `exjabberd.yml` at the repo root (the
+application also accepts `config/exjabberd.yml` and `nxmpps.yml`, in
+that order). Only listeners and modules that are actually implemented
+are listed there; the file documents what is missing in commented
+blocks.
 
 ## Creating users
 
@@ -57,20 +59,26 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix test
 The suite has unit tests (`StreamParser`, `Scram`, carbons
 eligibility, CSI policy) and live C2S integration tests
 (`test/exjabberd/live_c2s_test.exs`,
-`test/exjabberd/sm_carbons_csi_test.exs`) that speak real XMPP
+`test/exjabberd/sm_carbons_csi_test.exs`,
+`test/exjabberd/mam_pubsub_test.exs`) that speak real XMPP
 over a raw socket: login, roster, disco, ping, time, version,
 presence, 1-1 messages, MUC, offline messages, in-band registration,
 malformed/oversized stanzas, STARTTLS and SCRAM-SHA-256, plus
-stream-management ack/resume, message carbons and CSI queue/flush.
+stream-management ack/resume, message carbons and CSI queue/flush,
+MAM archive/query/prefs and PubSub node lifecycle.
 `test_sm_carbons_csi.py` at the repo root is the repeatable
 raw-socket probe for the same three features against a running
-dev server.
+dev server; `test_mam_pubsub.py` (raw sockets) and
+`test_mam_pubsub_slix.py` (slixmpp 1.17, plugins `xep_0313` and
+`xep_0060`) are the repeatable probes for MAM and PubSub.
 
 ## Verified features
 
 Verified over the wire with real clients (raw sockets + slixmpp 1.17)
 on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
-`mix test` 34/34, probe `test_sm_carbons_csi.py` 36/36:
+`mix test` 42/42, probe `test_sm_carbons_csi.py` 36/36,
+probe `test_mam_pubsub.py` 47/47, probe
+`test_mam_pubsub_slix.py` 12/12:
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
 * SASL PLAIN and **SCRAM-SHA-256** (RFC 5802, channel binding `n` and
@@ -95,7 +103,7 @@ on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
   (RFC 6120 §4.9); stanza over 262,144 bytes → `policy-violation`.
 * Accounts survive a server restart (Mnesia schema + disc_copies
   under `mnesia_data/`; the test env uses `mnesia_data_test/`).
-* 38 modules start at boot from `modules:` in `exjabberd.yml`
+* 39 modules start at boot from `modules:` in `exjabberd.yml`
   (`Exjabberd.Mod.Supervisor.loaded("localhost")` is no longer empty).
 * **Stream Management (XEP-0198, `urn:xmpp:sm:3`)**: `<enable/>` →
   `<enabled id previd max resume/>` (after resource binding),
@@ -120,6 +128,45 @@ on 2026-11-11 — raw harness 18/18, slixmpp harness 10/10,
   and presence stanzas are queued and flushed in order on
   `<active/>`, while IQ and error stanzas are still delivered
   immediately. CSI resets to `active` on stream resumption.
+* **Message Archive Management (XEP-0313, `urn:xmpp:mam:2`)**: 1-1
+  messages archived per user in Mnesia (`disc_copies`, survives a
+  restart; verified across a kill + reboot) with a unique id and an
+  XEP-0082 delay stamp; query via IQ with `with` / `start` / `end`
+  filters and RSM paging (`max` / `before` / `after`, incl. empty
+  `<before/>` = last page); results arrive as `<message/>` stanzas
+  carrying `<result><forwarded><delay/><message/></forwarded></result>`
+  and the IQ result carries only `<fin complete><set><first/><last/><count/></set></fin>`.
+  Prefs get/set (`default='always|never|roster'`, `<always/>` /
+  `<never/>` lists; `roster` archives only roster peers). Archive
+  size is capped per user by `max_archive_size` (500, configured in
+  `exjabberd.yml`, oldest dropped first). MUC room history is
+  archived the same way (owner = room bare JID) and queryable with a
+  MAM query addressed to the room. Advertised in disco#info.
+* **Publish-Subscribe (XEP-0060 core)**: service at
+  `pubsub.localhost` (disco#info / disco#items, incl. per-node
+  disco#info), nodes / items / subscriptions / affiliations
+  persisted in Mnesia (`disc_copies`, survives a restart; verified
+  across a kill + reboot). Create / delete (owner namespace),
+  subscribe / unsubscribe (with `subid`), publish (owner/publisher
+  or open publish model; non-publishers get `forbidden`), retract,
+  purge, get items (with `max_items` / RSM `<max/>`), get
+  subscriptions / affiliations, and owner get/set node
+  configuration (`access_model`, `publish_model`, `max_items`,
+  `persist_items`, `deliver_payloads`). Subscribers receive
+  `<message type='headline'>` event notifications with the item
+  payload. Node `max_items` is enforced (oldest dropped first).
+  Duplicate create → `conflict`; unknown node → `item-not-found`.
+
+  Honest limits of this phase (not bugs, just not built yet):
+  collection nodes are rejected (`bad-request`); `access_model`
+  `authorize` records subscriptions as `pending` but owner approval
+  is not implemented; `presence` / `roster` access models behave
+  like `open` for local users; MUC MAM queries do not check room
+  membership (rooms here have no membership enforcement either);
+  two messages archived within the same millisecond from two
+  different sessions have no defined cross-process order (the same
+  race exists in ejabberd's send/receive hooks) — the probes space
+  sends out to keep the expected order deterministic.
 
 ## Not implemented
 
@@ -132,8 +179,10 @@ there. Do not rely on them until they land:
   WebSocket, no file upload (XEP-0363), no HTTP API. No
   Plug/Cowboy/Bandit/Phoenix dependency.
 * **STUN/TURN** (5478), **MQTT** (1883).
-* **MAM, PubSub, Jingle, OMEMO, MIX, PEP**: modules exist as partial
-  implementations or stubs; none verified over the wire.
+* **MAM, PubSub, Jingle, OMEMO, MIX, PEP**: MAM and PubSub are
+  implemented and verified (see above). Jingle, OMEMO, MIX and PEP
+  modules exist as partial implementations or stubs; none verified
+  over the wire.
 * **Clustering**: single node only.
 * **Auth backends other than Mnesia** (SQL, LDAP, JWT, anonymous,
   OAuth, external, PAM): stubs that return `false` / `not_implemented`.
@@ -153,5 +202,11 @@ there. Do not rely on them until they land:
 * `lib/exjabberd/mod/stream_mgmt.ex` — XEP-0198 registry + config.
 * `lib/exjabberd/mod/carbons.ex` — XEP-0280 message carbons.
 * `lib/exjabberd/mod/csi.ex` — XEP-0352 policy + config.
+* `lib/exjabberd/mod/mam.ex` — XEP-0313 archive store (Mnesia),
+  prefs, archiving hooks.
+* `lib/exjabberd/mod/mam_query.ex` — XEP-0313 IQ handler
+  (query with `with`/`start`/`end` + RSM, prefs get/set, MUC query).
+* `lib/exjabberd/mod/pubsub.ex` — XEP-0060 PubSub service
+  (Mnesia-backed nodes/items/subs/affs, IQ + owner handlers, disco).
 * `lib/exjabberd/mnesia.ex` — Mnesia setup (schema + disc_copies).
 * `test/` — unit + live C2S integration tests.

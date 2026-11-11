@@ -124,6 +124,9 @@ defmodule Exjabberd.Router do
               conference_domain?(domain) ->
                 route_conference(stanza, domain)
 
+              pubsub_domain?(domain) ->
+                route_pubsub(stanza, domain)
+
               my_host?(domain) ->
                 route_local_offline(stanza, domain)
 
@@ -145,6 +148,17 @@ defmodule Exjabberd.Router do
   end
 
   def conference_domain?(_), do: false
+
+  @doc "True when `domain` is the `pubsub.` service of a local host."
+  @spec pubsub_domain?(binary()) :: boolean()
+  def pubsub_domain?(domain) when is_binary(domain) do
+    case domain do
+      "pubsub." <> base -> my_host?(base)
+      _ -> false
+    end
+  end
+
+  def pubsub_domain?(_), do: false
 
   # Stanza to a local user with no online session.
   defp route_local_offline(%{name: :presence}, _domain) do
@@ -237,6 +251,54 @@ defmodule Exjabberd.Router do
         :ok
 
       _ ->
+        :ok
+    end
+  end
+
+  # Stanza addressed to pubsub.<host> (the PubSub service).
+  defp route_pubsub(stanza, domain) do
+    try do
+      do_route_pubsub(stanza, domain)
+    rescue
+      e ->
+        Logger.warning("PubSub route failed: #{inspect(e)}")
+
+        if stanza.name == :iq and stanza.type in ["get", "set"] do
+          route(Exjabberd.Iq.error_iq(stanza, "internal-server-error"))
+        end
+
+        :ok
+    catch
+      :exit, reason ->
+        Logger.warning("PubSub route exited: #{inspect(reason)}")
+
+        if stanza.name == :iq and stanza.type in ["get", "set"] do
+          route(Exjabberd.Iq.error_iq(stanza, "internal-server-error"))
+        end
+
+        :ok
+    end
+  end
+
+  defp do_route_pubsub(stanza, domain) do
+    host = String.replace_prefix(domain, "pubsub.", "")
+
+    case stanza.name do
+      :iq when stanza.type in ["get", "set"] ->
+        # Service/node IQ (disco, pubsub, pubsub#owner): dispatch
+        # locally and route the answer back to the sender.
+        case Exjabberd.Iq.dispatch(stanza, host) do
+          {:ok, result} -> route(result)
+          {:error, _, err} -> route(err)
+          {:error, reason} -> route(Exjabberd.Iq.error_iq(stanza, error_condition(reason)))
+          _ -> :ok
+        end
+
+        :ok
+
+      _ ->
+        # Messages/presence to the service itself are dropped (the
+        # service only speaks IQ; notifications flow the other way).
         :ok
     end
   end

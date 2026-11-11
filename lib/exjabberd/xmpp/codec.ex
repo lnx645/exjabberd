@@ -230,6 +230,12 @@ defmodule Exjabberd.Xmpp.Codec do
             name -> Map.put(attrs, "name", name)
           end
 
+        attrs =
+          case Map.get(item, :node) do
+            nil -> attrs
+            node -> Map.put(attrs, "node", node)
+          end
+
         %{name: "item", attrs: attrs, children: []}
       end)
 

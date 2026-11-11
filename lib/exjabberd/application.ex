@@ -47,10 +47,20 @@ defmodule Exjabberd.Application do
     {:ok, sup} = Supervisor.start_link(children, opts)
 
     # Config file needs the Config GenServer, so it loads after the
-    # supervisor is up (hosts, listen ports, `modules:`).
-    config_file = Path.join([File.cwd!(), "config", "exjabberd.yml"])
+    # supervisor is up (hosts, listen ports, `modules:`). ejabberd
+    # searches /etc/ejabberd/ejabberd.yml, ./ejabberd.yml and
+    # ./nxmpps.yml; this server looks in the same places, in order:
+    # `config/exjabberd.yml` first (the documented location), then
+    # `exjabberd.yml` in the working directory, then `nxmpps.yml`.
+    # (Before this fix only `config/exjabberd.yml` was tried, but the
+    # file actually lives at the repo root — so `modules:` was never
+    # loaded and every boot silently fell back to `default_modules/0`.)
+    config_file =
+      ["config/exjabberd.yml", "exjabberd.yml", "nxmpps.yml"]
+      |> Enum.map(&Path.join(File.cwd!(), &1))
+      |> Enum.find(&File.exists?/1)
 
-    if File.exists?(config_file) do
+    if config_file do
       case Exjabberd.Config.load_file(config_file) do
         :ok ->
           Logger.info("exjabberd config loaded from #{config_file}")

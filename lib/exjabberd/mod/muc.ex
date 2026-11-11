@@ -132,6 +132,16 @@ defmodule Exjabberd.Mod.Muc do
     end
   end
 
+  @doc "List room bare JIDs for a host (for disco#items on the MUC service)."
+  @spec list_rooms(binary()) :: [binary()]
+  def list_rooms(host) do
+    ensure()
+
+    :ets.match(@table, {{host, :"$1"}, :_})
+    |> Enum.map(fn [room] -> room end)
+    |> Enum.sort()
+  end
+
   @doc "Set room affiliation (owner/admin/member/outcast) — mod_muc affiliations."
   @spec set_affiliation(binary(), binary(), binary(), atom()) :: :ok | {:error, term()}
   def set_affiliation(host, room_jid, jid, aff)
@@ -304,6 +314,11 @@ defmodule Exjabberd.Mod.Muc.Room do
 
       Exjabberd.Router.route(stanza)
     end)
+
+    # Archive the groupchat message in the room's MAM archive
+    # (XEP-0313, owner = room bare JID) so a MAM query addressed to
+    # the room returns the room history.
+    Exjabberd.Mod.Mam.archive_muc(state.host, state.jid, nick, from, body)
 
     # Also archive via MAM if enabled
     _ = history

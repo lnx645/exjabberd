@@ -208,6 +208,7 @@ defmodule Exjabberd.Mod.Supervisor do
   def default_modules do
     %{
       "mod_adhoc" => %{},
+      "mod_adhoc_api" => %{},
       "mod_admin_extra" => %{},
       "mod_announce" => %{},
       "mod_avatar" => %{},
@@ -222,7 +223,7 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_http_api" => %{},
       "mod_http_upload" => %{},
       "mod_last" => %{},
-      "mod_mam" => %{},
+      "mod_mam" => %{default: "always", max_archive_size: 500},
       "mod_mqtt" => %{},
       "mod_muc" => %{},
       "mod_muc_admin" => %{},

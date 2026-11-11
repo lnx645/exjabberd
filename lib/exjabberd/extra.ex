@@ -1,5 +1,5 @@
 defmodule Exjabberd.Econf do
-  @moduledoc "Econf - `econf` (ejabberd config validation) 100% parity, stabil. Validate `ejabberd.yml` types."
+  @moduledoc "Econf - `econf` (ejabberd config validation) (partial implementation), stabil. Validate `ejabberd.yml` types."
 
   @doc "Validate config map (like `econf:validate`)."
   @spec validate(map()) :: :ok | {:error, term()}
@@ -14,7 +14,7 @@ defmodule Exjabberd.Econf do
 end
 
 defmodule Exjabberd.Batch do
-  @moduledoc "Batch - `ejabberd_batch` 100% parity, stabil. For `ejabberdctl` batch `auth` + transaction."
+  @moduledoc "Batch - `ejabberd_batch` (partial implementation), stabil. For `ejabberdctl` batch `auth` + transaction."
 
   @doc "Run batch commands (like `ejabberd_batch:run`)."
   @spec run([map()]) :: {:ok, [term()]} | {:error, term()}
@@ -35,7 +35,7 @@ defmodule Exjabberd.Batch do
 end
 
 defmodule Exjabberd.Doc do
-  @moduledoc "Doc - `ejabberd_doc` + `ejabberd_commands_doc` + `ejabberd_options_doc` 100% parity, stabil."
+  @moduledoc "Doc - `ejabberd_doc` + `ejabberd_commands_doc` + `ejabberd_options_doc` (partial implementation), stabil."
 
   @doc "Get doc for command (like `ejabberd_doc:get_doc`)."
   @spec get(atom()) :: binary()
@@ -56,7 +56,7 @@ defmodule Exjabberd.Doc do
 end
 
 defmodule Exjabberd.Update do
-  @moduledoc "Update - `ejabberd_update` 100% parity, stabil. Handles DB schema upgrades `update_sql` + `mnesia`."
+  @moduledoc "Update - `ejabberd_update` (partial implementation), stabil. Handles DB schema upgrades `update_sql` + `mnesia`."
   @table :exjabberd_update_schema
 
   @doc "Update DB schema (like `ejabberd_update:update`)."
@@ -91,7 +91,7 @@ defmodule Exjabberd.Update do
 end
 
 defmodule Exjabberd.Piefxis do
-  @moduledoc "Piefxis - `ejabberd_piefxis` (XEP-0227) 100% parity, stabil. Portable import/export for user data (RFC 6120)."
+  @moduledoc "Piefxis - `ejabberd_piefxis` (XEP-0227) (partial implementation), stabil. Portable import/export for user data (RFC 6120)."
 
   @doc "Export data for host (like `ejabberd_piefxis:export_host`)."
   @spec export(binary()) :: {:ok, binary()}
@@ -120,7 +120,7 @@ defmodule Exjabberd.Piefxis do
 end
 
 defmodule Exjabberd.Pkix do
-  @moduledoc "PKIX - `ejabberd_pkix` + `ejabberd_acme` 100% parity, stabil. Cert management via `certfiles`."
+  @moduledoc "PKIX - `ejabberd_pkix` + `ejabberd_acme` (partial implementation), stabil. Cert management via `certfiles`."
   @table :exjabberd_pkix
 
   @doc "Get cert for domain (like `ejabberd_pkix:get_cert`)."
@@ -150,7 +150,7 @@ defmodule Exjabberd.Pkix do
 end
 
 defmodule Exjabberd.Regexp do
-  @moduledoc "Regexp - `ejabberd_regexp` 100% parity, stabil. Wraps `re` with `shaper` + `acl` regexps."
+  @moduledoc "Regexp - `ejabberd_regexp` (partial implementation), stabil. Wraps `re` with `shaper` + `acl` regexps."
 
   @doc "Match regex (like `ejabberd_regexp:match`)."
   @spec match(binary(), binary()) :: boolean()
@@ -172,7 +172,7 @@ defmodule Exjabberd.Regexp do
 end
 
 defmodule Exjabberd.Web do
-  @moduledoc "Web - `ejabberd_web` generic HTTP handler 100% parity, stabil. Dispatches `request_handlers` like ejabberd."
+  @moduledoc "Web - `ejabberd_web` generic HTTP handler (partial implementation), stabil. Dispatches `request_handlers` like ejabberd."
 
   @doc "Handle request (like `ejabberd_web:process_request`)."
   @spec handle(map()) :: {:ok, map()}

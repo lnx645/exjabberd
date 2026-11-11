@@ -8,3 +8,8 @@
 .DS_Store
 /priv/*.log
 /tmp/
+# Runtime data: never commit.
+/mnesia_data/
+/mnesia_data_test/
+/priv/ssl/
+erl_crash.dump

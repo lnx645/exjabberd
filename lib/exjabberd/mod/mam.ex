@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.Mam do
   @moduledoc """
-  Message Archive Management - `mod_mam` (XEP-0313) + `mod_mam_muc` 100% parity, stabil.
+  Message Archive Management - `mod_mam` (XEP-0313) + `mod_mam_muc` (partial implementation), stabil.
 
   Stores messages with MAM v0.2 semantics, supports `default` always/never/roster,
   `prefs` get/set, Mnesia/SQL backends via `Exjabberd.Storage`, RSM `before/after/limit`

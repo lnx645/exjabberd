@@ -1,7 +1,7 @@
 defmodule Exjabberd.Mod.Jingle do
   @moduledoc """
   Jingle - XEP-0166 (Jingle), XEP-0167 (RTP), XEP-0176 (ICE-UDP), XEP-0183 (Jingle?),
-  + XEP-0215 (STUN/TURN) 100% parity untuk vcall/voice call.
+  + XEP-0215 (STUN/TURN) (partial implementation) untuk vcall/voice call.
 
   Ejabberd sendiri tidak punya `mod_jingle` terpisah — Jingle di-handle
   via passthrough + `mod_stun_disco` + `ejabberd_stun` (TURN). Di exjabberd

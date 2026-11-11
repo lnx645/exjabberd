@@ -1,6 +1,6 @@
 defmodule Exjabberd.Storage.SqlSchema do
   @moduledoc """
-  SQL schema - 100% parity with `ejabberd_sql_schema` + `sql/*.sql` + `ejabberd_sql_schema:update_schema`, stabil.
+  SQL schema - partial implementation of `ejabberd_sql_schema` + `sql/*.sql` + `ejabberd_sql_schema:update_schema`, stabil.
 
   Defines tables like `users`, `rosterusers`, `archive`, `pubsub_node`, `pubsub_item`, `muc_room`,
   `offline`, `privacy`, `vcard`, `privacy_list`, `oauth_token`, `mam`, `caps`, `sr_group` etc.

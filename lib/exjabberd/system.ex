@@ -1,6 +1,6 @@
 defmodule Exjabberd.Logger do
   @moduledoc """
-  Logger - 100% parity with `ejabberd_logger` + `ejabberd_logger` `loglevel` + `acl` filtering, stabil.
+  Logger - partial implementation of `ejabberd_logger` + `ejabberd_logger` `loglevel` + `acl` filtering, stabil.
 
   Wraps Elixir Logger dengan ejabberd loglevels `emergency..debug` dan per-host filtering
   seperti `ejabberd_logger:log/4`.
@@ -59,7 +59,7 @@ end
 
 defmodule Exjabberd.SystemMonitor do
   @moduledoc """
-  System monitor - 100% parity with `ejabberd_system_monitor` + `ejabberd_system_monitor:monitor`, stabil.
+  System monitor - partial implementation of `ejabberd_system_monitor` + `ejabberd_system_monitor:monitor`, stabil.
 
   Monitors `large_heap` (>8000000 words), `long_gc` (>1000ms), `busy_port`, `busy_dist_port`,
   `system_memory_high_watermark` via `os_mon` + `:telemetry` + `:erlang.system_monitor`.
@@ -118,7 +118,7 @@ end
 
 defmodule Exjabberd.Listener do
   @moduledoc """
-  Listener - 100% parity with `ejabberd_listener` + `ejabberd_acceptor` + `ejabberd_listener:opt_type`, stabil.
+  Listener - partial implementation of `ejabberd_listener` + `ejabberd_acceptor` + `ejabberd_listener:opt_type`, stabil.
 
   Starts Ranch/Cowboy acceptors for `listen:` entries in `ejabberd.yml`
   (ejabberd `listen: port: 5222 module: ejabberd_c2s` etc.).

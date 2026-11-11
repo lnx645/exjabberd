@@ -1,6 +1,6 @@
 defmodule Exjabberd.Telemetry do
   @moduledoc """
-  Telemetry - `ejabberd` metrics via `:telemetry` + `ejabberd_system_monitor` 100% parity, stabil.
+  Telemetry - `ejabberd` metrics via `:telemetry` + `ejabberd_system_monitor` (partial implementation), stabil.
 
   Emits dan handle:
   - `[:exjabberd, :c2s, :bind]` + `auth`, `open_stream`, `close`

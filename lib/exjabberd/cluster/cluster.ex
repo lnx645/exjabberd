@@ -1,6 +1,6 @@
 defmodule Exjabberd.Cluster do
   @moduledoc """
-  Cluster manager - 100% parity with `ejabberd_cluster` + `ejabberd_cluster_mnesia` +
+  Cluster manager - partial implementation of `ejabberd_cluster` + `ejabberd_cluster_mnesia` +
   `ejabberd_router_mnesia/sql/redis` + `ejabberd_sm_mnesia/redis/sql` +
   `ejabberd_cluster_mnesia:wait_for_sync`.
 

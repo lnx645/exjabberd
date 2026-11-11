@@ -1,6 +1,6 @@
 defmodule Exjabberd.Acl do
   @moduledoc """
-  ACL - `acl` + `ejabberd_access_permissions` 100% parity, stabil.
+  ACL - `acl` + `ejabberd_access_permissions` (partial implementation), stabil.
 
   Parses `acl:` and `access_rules:` from ejabberd.yml.
   Supports: `user`, `user_regexp`, `server`, `server_regexp`, `ip`/`ip: 127.0.0.0/8`, `all`, `none`, `acl: admin: server: example.com` etc.

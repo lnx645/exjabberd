@@ -1,8 +1,8 @@
 defmodule Exjabberd.Config do
   @moduledoc """
-  Central configuration store for exjabberd — 100% `ejabberd.yml` parity, stabil.
+  Central configuration store for exjabberd — partial `ejabberd.yml` compatibility, stabil.
 
-  100% compatible dengan `ejabberd.yml` semantics, parsed via `yaml_elixir`.
+  compatible dengan `ejabberd.yml` semantics (subset), parsed via `yaml_elixir`.
   Mendukung per-host `hosts:`, `listen:`, `acl:`, `access_rules:`, `shaper:`,
   `api_permissions:`, `modules:` seperti `ejabberd_config` + `ejabberd_config_transformer`
   + `ejabberd_options` + `ejabberd_option`.

@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.HostMeta do
   @moduledoc """
-  Host-meta - XEP-0156 Service Discovery + RFC 6415 `/.well-known/host-meta` 100% parity, stabil.
+  Host-meta - XEP-0156 Service Discovery + RFC 6415 `/.well-known/host-meta` (partial implementation), stabil.
   Serves XRD with `alt-connections` for BOSH/WS like `mod_host_meta` + `ejabberd` docs.
   """
   use Exjabberd.Mod.GenMod
@@ -61,7 +61,7 @@ defmodule Exjabberd.Mod.HostMeta do
 end
 
 defmodule Exjabberd.Mod.Http do
-  @moduledoc "`mod_http` generic HTTP (ejabberd http fileserver) 100% parity."
+  @moduledoc "`mod_http` generic HTTP (ejabberd http fileserver) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -70,7 +70,7 @@ defmodule Exjabberd.Mod.Http do
 end
 
 defmodule Exjabberd.Mod.HttpFileserver do
-  @moduledoc "`mod_http_fileserver` 100% parity. Serves static files."
+  @moduledoc "`mod_http_fileserver` (partial implementation). Serves static files."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, opts) do
@@ -84,7 +84,7 @@ defmodule Exjabberd.Mod.HttpFileserver do
 end
 
 defmodule Exjabberd.Mod.HttpUploadQuota do
-  @moduledoc "`mod_http_upload_quota` 100% parity. Quota per user."
+  @moduledoc "`mod_http_upload_quota` (partial implementation). Quota per user."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_upload_quota
   @impl true
@@ -129,7 +129,7 @@ defmodule Exjabberd.Mod.HttpUploadQuota do
 end
 
 defmodule Exjabberd.Mod.Invites do
-  @moduledoc "`mod_invites` (XEP-0401) 100% parity. Invite via URL."
+  @moduledoc "`mod_invites` (XEP-0401) (partial implementation). Invite via URL."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_invites
   @impl true
@@ -170,7 +170,7 @@ end
 
 defmodule Exjabberd.Mod.JidPrep do
   @moduledoc """
-  JidPrep - `mod_jidprep` + `jid` stringprep (RFC3454, RFC7622) 100% parity, stabil.
+  JidPrep - `mod_jidprep` + `jid` stringprep (RFC3454, RFC7622) (partial implementation), stabil.
   Delegates ke `Exjabberd.Xmpp.Jid` `nodeprep/nameprep/resourceprep` seperti ejabberd `jid`.
   """
   use Exjabberd.Mod.GenMod
@@ -194,7 +194,7 @@ defmodule Exjabberd.Mod.JidPrep do
 end
 
 defmodule Exjabberd.Mod.MatrixGw do
-  @moduledoc "`mod_matrix_gw` (Matrix gateway) 100% parity."
+  @moduledoc "`mod_matrix_gw` (Matrix gateway) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -208,7 +208,7 @@ defmodule Exjabberd.Mod.MatrixGw do
 end
 
 defmodule Exjabberd.Mod.Metrics do
-  @moduledoc "`mod_metrics` 100% parity. Exposes Prometheus metrics."
+  @moduledoc "`mod_metrics` (partial implementation). Exposes Prometheus metrics."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_metrics
   @impl true
@@ -236,7 +236,7 @@ defmodule Exjabberd.Mod.Metrics do
 end
 
 defmodule Exjabberd.Mod.MixPam do
-  @moduledoc "`mod_mix_pam` (XEP-0369 PAM for MIX) 100% parity. Handles Participant Anonymization Mapping via `stable_id` -> real JID."
+  @moduledoc "`mod_mix_pam` (XEP-0369 PAM for MIX) (partial implementation). Handles Participant Anonymization Mapping via `stable_id` -> real JID."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_mix_pam
   @impl true
@@ -280,7 +280,7 @@ defmodule Exjabberd.Mod.MixPam do
 end
 
 defmodule Exjabberd.Mod.MqttBridge do
-  @moduledoc "`mod_mqtt_bridge` 100% parity. Bridges MQTT to XMPP PubSub."
+  @moduledoc "`mod_mqtt_bridge` (partial implementation). Bridges MQTT to XMPP PubSub."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -290,7 +290,7 @@ end
 
 defmodule Exjabberd.Mod.Multicast do
   @moduledoc """
-  Multicast - XEP-0033 Extended Stanza Addressing 100% parity.
+  Multicast - XEP-0033 Extended Stanza Addressing (partial implementation).
   Handles `<addresses xmlns='http://jabber.org/protocol/address'>` with multiple `to`/`cc`.
   Like `mod_multicast` does `route_multicast`.
   """
@@ -336,7 +336,7 @@ defmodule Exjabberd.Mod.Multicast do
 end
 
 defmodule Exjabberd.Mod.PresCounter do
-  @moduledoc "`mod_pres_counter` 100% parity. Counts presences."
+  @moduledoc "`mod_pres_counter` (partial implementation). Counts presences."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_pres_counter
   @impl true
@@ -358,7 +358,7 @@ defmodule Exjabberd.Mod.PresCounter do
 end
 
 defmodule Exjabberd.Mod.Privilege do
-  @moduledoc "`mod_privilege` (XEP-0356 Privileged Entity) 100% parity."
+  @moduledoc "`mod_privilege` (XEP-0356 Privileged Entity) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -367,7 +367,7 @@ defmodule Exjabberd.Mod.Privilege do
 end
 
 defmodule Exjabberd.Mod.Providers do
-  @moduledoc "`mod_providers` 100% parity. S2S provider selection."
+  @moduledoc "`mod_providers` (partial implementation). S2S provider selection."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -376,7 +376,7 @@ defmodule Exjabberd.Mod.Providers do
 end
 
 defmodule Exjabberd.Mod.PubSubServerInfo do
-  @moduledoc "`mod_pubsub_serverinfo` 100% parity."
+  @moduledoc "`mod_pubsub_serverinfo` (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -385,7 +385,7 @@ defmodule Exjabberd.Mod.PubSubServerInfo do
 end
 
 defmodule Exjabberd.Mod.RegisterWeb do
-  @moduledoc "`mod_register_web` 100% parity. Web registration form."
+  @moduledoc "`mod_register_web` (partial implementation). Web registration form."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -396,7 +396,7 @@ defmodule Exjabberd.Mod.RegisterWeb do
 end
 
 defmodule Exjabberd.Mod.S2sBidi do
-  @moduledoc "`mod_s2s_bidi` (XEP-0288) 100% parity. Bidirectional S2S."
+  @moduledoc "`mod_s2s_bidi` (XEP-0288) (partial implementation). Bidirectional S2S."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -405,7 +405,7 @@ defmodule Exjabberd.Mod.S2sBidi do
 end
 
 defmodule Exjabberd.Mod.ScramUpgrade do
-  @moduledoc "`mod_scram_upgrade` 100% parity. Upgrades plain to SCRAM."
+  @moduledoc "`mod_scram_upgrade` (partial implementation). Upgrades plain to SCRAM."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -419,7 +419,7 @@ defmodule Exjabberd.Mod.ScramUpgrade do
 end
 
 defmodule Exjabberd.Mod.ServiceLog do
-  @moduledoc "`mod_service_log` 100% parity. Logs stanzas to service."
+  @moduledoc "`mod_service_log` (partial implementation). Logs stanzas to service."
   use Exjabberd.Mod.GenMod
   @table :exjabberd_service_log
   @impl true
@@ -448,7 +448,7 @@ defmodule Exjabberd.Mod.ServiceLog do
 end
 
 defmodule Exjabberd.Mod.Sic do
-  @moduledoc "`mod_sic` (XEP-0279) 100% parity. Server IP check."
+  @moduledoc "`mod_sic` (XEP-0279) (partial implementation). Server IP check."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -459,7 +459,7 @@ defmodule Exjabberd.Mod.Sic do
 end
 
 defmodule Exjabberd.Mod.Admin do
-  @moduledoc "`mod_admin` (deprecated, use mod_admin_extra) 100% parity."
+  @moduledoc "`mod_admin` (deprecated, use mod_admin_extra) (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -468,7 +468,7 @@ defmodule Exjabberd.Mod.Admin do
 end
 
 defmodule Exjabberd.Mod.MucAdmin do
-  @moduledoc "`mod_muc_admin` 100% parity. Admin commands for MUC."
+  @moduledoc "`mod_muc_admin` (partial implementation). Admin commands for MUC."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -478,7 +478,7 @@ end
 
 defmodule Exjabberd.Mod.MucLog do
   @moduledoc """
-  MUC Log - `mod_muc_log` 100% parity with file rotation. Logs MUC messages to file/DB per room/day.
+  MUC Log - `mod_muc_log` partial implementation of file rotation. Logs MUC messages to file/DB per room/day.
   Like `mod_muc_log` with `outdir` + `dirname` + `file_format` (html/plain) + `timezone` + `access_log`.
   File: `outdir/room@host/YYYY/MM/DD.html` with hourly flush like ejabberd does file:write.
   """
@@ -550,7 +550,7 @@ defmodule Exjabberd.Mod.MucLog do
 end
 
 defmodule Exjabberd.Mod.PushKeepalive do
-  @moduledoc "`mod_push_keepalive` 100% parity."
+  @moduledoc "`mod_push_keepalive` (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -559,7 +559,7 @@ defmodule Exjabberd.Mod.PushKeepalive do
 end
 
 defmodule Exjabberd.Mod.SharedRosterLdap do
-  @moduledoc "`mod_shared_roster_ldap` 100% parity. Shared roster via LDAP."
+  @moduledoc "`mod_shared_roster_ldap` (partial implementation). Shared roster via LDAP."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -568,7 +568,7 @@ defmodule Exjabberd.Mod.SharedRosterLdap do
 end
 
 defmodule Exjabberd.Mod.VcardLdap do
-  @moduledoc "`mod_vcard_ldap` 100% parity."
+  @moduledoc "`mod_vcard_ldap` (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -577,7 +577,7 @@ defmodule Exjabberd.Mod.VcardLdap do
 end
 
 defmodule Exjabberd.Mod.AdminUpdate do
-  @moduledoc "`mod_admin_update_sql` 100% parity. Updates SQL schema on start."
+  @moduledoc "`mod_admin_update_sql` (partial implementation). Updates SQL schema on start."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(host, _opts) do
@@ -590,7 +590,7 @@ defmodule Exjabberd.Mod.AdminUpdate do
 end
 
 defmodule Exjabberd.Mod.InvitesHttp do
-  @moduledoc "`mod_invites_http` 100% parity."
+  @moduledoc "`mod_invites_http` (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok
@@ -599,7 +599,7 @@ defmodule Exjabberd.Mod.InvitesHttp do
 end
 
 defmodule Exjabberd.Mod.InvitesRegister do
-  @moduledoc "`mod_invites_register` 100% parity."
+  @moduledoc "`mod_invites_register` (partial implementation)."
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok

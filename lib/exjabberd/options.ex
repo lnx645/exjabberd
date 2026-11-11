@@ -1,6 +1,6 @@
 defmodule Exjabberd.Options do
   @moduledoc """
-  Options - `ejabberd_option` + `ejabberd_options` + `ejabberd_options_doc` + `ejabberd_config_transformer` 100% parity, stabil.
+  Options - `ejabberd_option` + `ejabberd_options` + `ejabberd_options_doc` + `ejabberd_config_transformer` (partial implementation), stabil.
 
   Defines default options, validators, transformers and docs for every `ejabberd.yml` key
   (hosts, listen, acl, access_rules, shaper, s2s, modules) like `ejabberd_options:define_option/1`.
@@ -74,7 +74,7 @@ defmodule Exjabberd.Options do
 end
 
 defmodule Exjabberd.TmpSup do
-  @moduledoc "Tmp supervisor - `ejabberd_tmp_sup` 100% parity. For transient processes (like `mod_muc` room start)."
+  @moduledoc "Tmp supervisor - `ejabberd_tmp_sup` (partial implementation). For transient processes (like `mod_muc` room start)."
   use DynamicSupervisor
   def start_link(_), do: DynamicSupervisor.start_link(__MODULE__, :ok, name: __MODULE__)
   @impl true

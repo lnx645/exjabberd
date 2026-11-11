@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.Omemo do
   @moduledoc """
-  OMEMO Encryption - XEP-0384 100% parity (ejabberd via PEP + PubSub).
+  OMEMO Encryption - XEP-0384 (partial implementation) (ejabberd via PEP + PubSub).
 
   Ejabberd tidak punya `mod_omemo` terpisah — OMEMO jalan via `mod_pubsub` PEP
   dengan node `urn:xmpp:omemo:0` (bundle) dan `urn:xmpp:omemo:0:devicelist`.
@@ -161,7 +161,7 @@ end
 
 defmodule Exjabberd.Mod.Pgp do
   @moduledoc """
-  OpenPGP for XMPP - XEP-0373 + XEP-0374 (OX) 100% parity.
+  OpenPGP for XMPP - XEP-0373 + XEP-0374 (OX) (partial implementation).
   PubSub PEP `urn:xmpp:openpgp:0:public-keys` seperti OMEMO.
   """
 

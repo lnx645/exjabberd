@@ -1,6 +1,6 @@
 defmodule Exjabberd.Web.Admin do
   @moduledoc """
-  Web Admin - 100% parity with `ejabberd_web_admin` + `ejabberd_web`.
+  Web Admin - partial implementation of `ejabberd_web_admin` + `ejabberd_web`.
 
   Provides admin UI at `/_admin` and `/_api` like ejabberd.
   Dispatches to `Exjabberd.Admin` commands with ACL checks (`ejabberd_access_permissions`),
@@ -114,7 +114,7 @@ end
 
 defmodule Exjabberd.Admin do
   @moduledoc """
-  Admin command registry - `ejabberd_admin` + `ejabberd_commands` + `mod_admin_extra` + `ejabberd_ctl` 100% parity.
+  Admin command registry - `ejabberd_admin` + `ejabberd_commands` + `mod_admin_extra` + `ejabberd_ctl` (partial implementation).
 
   Every `ejabberdctl` command is a function here, registered via ETS for
   extensibility (mirrors `ejabberd_commands:register_commands/2`).
@@ -332,7 +332,7 @@ defmodule Exjabberd.Admin do
 end
 
 defmodule Exjabberd.Web.Http do
-  @moduledoc "HTTP listener - `ejabberd_http` 100% parity. Routes `request_handlers` like ejabberd.yml `listen: request_handlers:`."
+  @moduledoc "HTTP listener - `ejabberd_http` (partial implementation). Routes `request_handlers` like ejabberd.yml `listen: request_handlers:`."
   use GenServer
 
   @handlers %{
@@ -377,7 +377,7 @@ defmodule Exjabberd.Web.Http do
 end
 
 defmodule Exjabberd.Web.Bosh do
-  @moduledoc "BOSH - `ejabberd_bosh` + `mod_bosh` (XEP-0124, XEP-0206) 100% parity. Holds BOSH sessions with rid/sid, inactivity, max_pause."
+  @moduledoc "BOSH - `ejabberd_bosh` + `mod_bosh` (XEP-0124, XEP-0206) (partial implementation). Holds BOSH sessions with rid/sid, inactivity, max_pause."
   use GenServer
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -403,7 +403,7 @@ defmodule Exjabberd.Web.Bosh do
 end
 
 defmodule Exjabberd.Web.WebSocket do
-  @moduledoc "WebSocket - `ejabberd_http_ws` + `ejabberd_websocket` (RFC 7395, XEP-0124) 100% parity. Upgrades HTTP to XMPP over WebSocket with `Sec-WebSocket-Protocol: xmpp`."
+  @moduledoc "WebSocket - `ejabberd_http_ws` + `ejabberd_websocket` (RFC 7395, XEP-0124) (partial implementation). Upgrades HTTP to XMPP over WebSocket with `Sec-WebSocket-Protocol: xmpp`."
   use GenServer
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -430,7 +430,7 @@ defmodule Exjabberd.Web.WebSocket do
 end
 
 defmodule Exjabberd.Web.Upload do
-  @moduledoc "HTTP File Upload - `mod_http_upload` (XEP-0363) 100% parity. Delegates to `Exjabberd.Mod.HttpUpload` with quota."
+  @moduledoc "HTTP File Upload - `mod_http_upload` (XEP-0363) (partial implementation). Delegates to `Exjabberd.Mod.HttpUpload` with quota."
   use Exjabberd.Mod.GenMod
 
   @impl true
@@ -458,7 +458,7 @@ defmodule Exjabberd.Web.Upload do
 end
 
 defmodule Exjabberd.Web.Acme do
-  @moduledoc "ACME - `ejabberd_acme` (Let's Encrypt, RFC 8555) 100% parity. Handles `/.well-known/acme-challenge/`."
+  @moduledoc "ACME - `ejabberd_acme` (Let's Encrypt, RFC 8555) (partial implementation). Handles `/.well-known/acme-challenge/`."
   use GenServer
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   @impl true
@@ -498,7 +498,7 @@ defmodule Exjabberd.Web.Acme do
 end
 
 defmodule Exjabberd.Web.Captcha do
-  @moduledoc "Captcha - `ejabberd_captcha` (XEP-0158) 100% parity. Generates image and validates."
+  @moduledoc "Captcha - `ejabberd_captcha` (XEP-0158) (partial implementation). Generates image and validates."
   use GenServer
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   @impl true
@@ -510,7 +510,7 @@ defmodule Exjabberd.Web.Captcha do
 end
 
 defmodule Exjabberd.Web.Stun do
-  @moduledoc "STUN/TURN - `ejabberd_stun` (XEP-0215, RFC 5389/5766) 100% parity. TURN relay allocation."
+  @moduledoc "STUN/TURN - `ejabberd_stun` (XEP-0215, RFC 5389/5766) (partial implementation). TURN relay allocation."
   use GenServer
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   @impl true
@@ -540,7 +540,7 @@ defmodule Exjabberd.Web.Stun do
 end
 
 defmodule Exjabberd.Web.OAuth do
-  @moduledoc "OAuth - `ejabberd_oauth` (RFC 6749) 100% parity. Issues tokens for `mod_http_api` with `api_permissions`."
+  @moduledoc "OAuth - `ejabberd_oauth` (RFC 6749) (partial implementation). Issues tokens for `mod_http_api` with `api_permissions`."
   use GenServer
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   @impl true

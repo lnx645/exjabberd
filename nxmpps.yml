@@ -1,5 +1,10 @@
 ###
-###              exjabberd configuration file — 100% ejabberd/nxmpps parity
+###              exjabberd configuration file
+###
+### This file only lists listeners and modules that are actually
+### implemented. Anything not implemented yet lives in the commented
+### blocks below (it is NOT started, and the server logs a warning
+### for any unknown module name).
 ###
 ### The parameters used in this configuration file are explained at
 ###       https://docs.ejabberd.im/admin/configuration
@@ -31,7 +36,8 @@ listen:
     max_stanza_size: 262144
     shaper: c2s_shaper
     access: c2s
-    starttls_required: true
+    # STARTTLS is offered on this port but optional. There is no
+    # starttls_required option yet: PLAIN/SCRAM also work without TLS.
   -
     port: 5223
     ip: "::"
@@ -40,44 +46,17 @@ listen:
     shaper: c2s_shaper
     access: c2s
     tls: true
-  -
-    port: 5269
-    ip: "::"
-    module: exjabberd_s2s_in
-    max_stanza_size: 524288
-    shaper: s2s_shaper
-  -
-    port: 5443
-    ip: "::"
-    module: exjabberd_http
-    tls: true
-    request_handlers:
-      /admin: exjabberd_web_admin
-      /api: mod_http_api
-      /bosh: mod_bosh
-      /captcha: exjabberd_captcha
-      /upload: mod_http_upload
-      /ws: exjabberd_http_ws
-  -
-    port: 5280
-    ip: "::"
-    module: exjabberd_http
-    request_handlers:
-      /admin: exjabberd_web_admin
-      /.well-known/acme-challenge: exjabberd_acme
-  -
-    port: 5478
-    ip: "::"
-    transport: udp
-    module: exjabberd_stun
-    use_turn: true
-    ## The server's public IPv4 address:
-    # turn_ipv4_address: "203.0.113.3"
-    ## The server's public IPv6 address:
-    # turn_ipv6_address: "2001:db8::3"
-  -
-    port: 1883
-    ip: "::"
+## NOT IMPLEMENTED (removed from the active listen list on purpose —
+## the old file claimed these ports, but nothing ever listened on them):
+##   5269  S2S inbound (exjabberd_s2s_in) — no S2S listener exists, and
+##         federation to other servers is not implemented.
+##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — there is
+##         no HTTP stack (no Plug/Cowboy/Bandit/Phoenix dependency).
+##         BOSH (XEP-0206), file upload (XEP-0363) and the web admin
+##         therefore do not exist yet.
+##   5280  HTTP: /admin, /.well-known/acme-challenge — same reason.
+##   5478  STUN/TURN over UDP — not implemented.
+##   1883  MQTT — not implemented.
     module: mod_mqtt
     backlog: 1000
 
@@ -174,12 +153,13 @@ modules:
   mod_blocking: {}
   mod_bosh: {}
   mod_caps: {}
-  mod_carboncopy: {}
-  mod_client_state: {}
   mod_configure: {}
   mod_disco: {}
   mod_fail2ban: {}
   mod_http_api: {}
+  # mod_http_upload is configured but has no HTTP listener to serve it
+  # (port 5443 above is not implemented), so file upload does not work
+  # yet. Keep the section for when the HTTP stack lands.
   mod_http_upload:
     put_url: https://@HOST@:5443/upload
     custom_headers:
@@ -235,13 +215,17 @@ modules:
   mod_s2s_bidi: {}
   mod_s2s_dialback: {}
   mod_shared_roster: {}
-  mod_stream_mgmt:
-    resend_on_timeout: if_offline
   mod_stun_disco: {}
   mod_vcard: {}
   mod_vcard_xupdate: {}
   mod_version:
     show_os: false
+
+## NOT IMPLEMENTED YET (kept here as a record, not started):
+##   mod_carboncopy    (XEP-0280 message carbons) — no implementation.
+##   mod_client_state  (XEP-0352 client state indication) — no implementation.
+##   mod_stream_mgmt   (XEP-0198 stream management) — no implementation.
+## The server logs a warning and skips any module name it cannot resolve.
 
 ### Local Variables:
 ### mode: yaml

@@ -1,6 +1,6 @@
 defmodule Exjabberd.Shaper do
   @moduledoc """
-  Traffic shaper - 100% parity with `ejabberd_shaper` + `ejabberd_shaper` config + `ejabberd_c2s` shaper, stabil.
+  Traffic shaper - partial implementation of `ejabberd_shaper` + `ejabberd_shaper` config + `ejabberd_c2s` shaper, stabil.
 
   Token-bucket per `shaper` name. Supports `none` and `{rate, burst}` like ejabberd's `shaper: {1000, 8000}` - rate in bytes/sec.
   Handles `c2s_shaper` / `s2s_shaper` + `shaper` rules + `acme` etc. seperti ejabberd.

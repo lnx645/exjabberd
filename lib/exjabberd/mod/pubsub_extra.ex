@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mod.PubSub.Node do
   @moduledoc """
-  PubSub node behaviour - `gen_pubsub_node` + `node_flat`/`node_hometree` 100% parity, stabil.
+  PubSub node behaviour - `gen_pubsub_node` + `node_flat`/`node_hometree` (partial implementation), stabil.
 
   Every node type (leaf, collection, push) implements this. Like ejabberd `gen_pubsub_node`.
   """
@@ -19,7 +19,7 @@ end
 
 defmodule Exjabberd.Mod.PubSub.Nodetree do
   @moduledoc """
-  PubSub nodetree behaviour - `gen_pubsub_nodetree` (tree, virtual) 100% parity, stabil.
+  PubSub nodetree behaviour - `gen_pubsub_nodetree` (tree, virtual) (partial implementation), stabil.
 
   Stores node hierarchy like `nodetree_tree`/`nodetree_virtual` di ejabberd.
   """

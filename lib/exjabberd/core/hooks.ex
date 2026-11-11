@@ -1,6 +1,6 @@
 defmodule Exjabberd.Hooks do
   @moduledoc """
-  Extensible hook system, 100% compatible with `ejabberd_hooks` + `ejabberd_hooks:run_fold`, stabil.
+  Extensible hook system, compatible with `ejabberd_hooks` (partial implementation) + `ejabberd_hooks:run_fold`, stabil.
 
   ejabberd's extensibility comes from hooks - every major event
   (auth, roster, message, presence, disco, pubsub, muc, mam) runs through a hook chain.

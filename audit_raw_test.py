@@ -2,11 +2,40 @@
 """Raw-socket live test against exjabberd C2S on 127.0.0.1:5222.
 Records PASS/FAIL per check with wire transcript excerpts.
 Usage: python3 exj-raw-test.py
+Test users (andi/budi/carol, password "secret") are created via RPC
+when missing, so the probe works on a fresh clone too.
 """
-import socket, time, sys, re
+import socket, time, sys, re, os, subprocess
 
 HOST, PORT = "127.0.0.1", 5222
 results = []
+
+def rpc_create(user):
+    """Create a test account on the running node via RPC (idempotent:
+    already-existing users report :ok too)."""
+    code = (
+        f':rpc.call(:"exjabberd@{socket.gethostname()}", Exjabberd.Auth, '
+        f':create_user, ["localhost", "{user}", "secret"]) |> IO.inspect()'
+    )
+    env = dict(os.environ)
+    env["PATH"] = ("/home/hatch/workspace/.toolchain/otp-28.1/bin:"
+                   "/home/hatch/workspace/.toolchain/elixir-1.19.7/bin:"
+                   + env.get("PATH", ""))
+    env["ELIXIR_ERL_OPTIONS"] = "+fnu"
+    r = subprocess.run(["elixir", "--sname", "probe", "-e", code],
+                       capture_output=True, text=True, timeout=60, env=env)
+    return ":ok" in (r.stdout + r.stderr)
+
+def ensure_users(users):
+    # Setup lines are printed, not counted in the SUMMARY: they are a
+    # precondition, not a feature check. A failure here aborts loudly
+    # instead of producing confusing auth failures below.
+    for u in users:
+        ok = rpc_create(u)
+        print(f"[SETUP] user {u}@localhost: {'ok' if ok else 'FAILED'}", flush=True)
+        if not ok:
+            print("SETUP FAILED: is the dev server running on 5222?", file=sys.stderr)
+            sys.exit(2)
 
 def log(name, ok, detail=""):
     results.append((name, ok, detail))
@@ -72,6 +101,7 @@ def iq_wait(conn, iq_xml, marker, timeout=6):
     return conn.recv_until(marker, timeout=timeout)
 
 try:
+    ensure_users(["andi", "budi", "carol"])
     andi = Conn("andi")
     budi = Conn("budi")
     ok_a = login(andi, "andi", "secret", "raw1")

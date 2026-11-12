@@ -15,9 +15,15 @@ defmodule Exjabberd.Mod.Roster do
   """
 
   use Exjabberd.Mod.GenMod
+  require Logger
 
   @table :exjabberd_roster
   @version_table :exjabberd_roster_version
+  # Shared roster table (Fase 7): `{bare, contact_jid} -> item`, kept
+  # in Mnesia `disc_copies` and replicated across the cluster, with
+  # the ETS table as a local read cache. Attributes must match
+  # `Exjabberd.Mnesia.cluster_tables/0`.
+  @mnesia_table :roster
 
   @impl true
   def start(host, opts) do
@@ -53,6 +59,8 @@ defmodule Exjabberd.Mod.Roster do
         :ets.new(t, opts)
       end
     end
+
+    Exjabberd.Mnesia.ensure_table(@mnesia_table, [:key, :item])
   end
 
   @type subscription :: :none | :to | :from | :both | :remove
@@ -109,12 +117,29 @@ defmodule Exjabberd.Mod.Roster do
     :ok
   end
 
-  @doc "Get roster for user (like `mod_roster:get_roster/2`)."
+  @doc "Get roster for user (like `mod_roster:get_roster/2`). Reads the shared Mnesia table (Fase 7), ETS as fallback."
   @spec get_roster(binary(), binary()) :: [item()]
   def get_roster(host, user) do
     ensure_tables()
     bare = String.downcase("#{user}@#{host}")
+
+    case mnesia_items(bare) do
+      [] -> ets_items(bare)
+      items -> items
+    end
+  end
+
+  defp ets_items(bare) do
     :ets.match(@table, {{bare, :"$1"}, :"$2"}) |> Enum.map(fn [_jid, item] -> item end)
+  end
+
+  defp mnesia_items(bare) do
+    :mnesia.dirty_match_object({@mnesia_table, {bare, :_}, :_})
+    |> Enum.map(fn {@mnesia_table, {_b, _jid}, item} -> item end)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 
   @doc "Get roster with version (XEP-0237)."
@@ -122,7 +147,7 @@ defmodule Exjabberd.Mod.Roster do
   def get_roster(host, user, ver) do
     ensure_tables()
     bare = String.downcase("#{user}@#{host}")
-    all = :ets.match(@table, {{bare, :"$1"}, :"$2"}) |> Enum.map(fn [_jid, item] -> item end)
+    all = get_roster(host, user)
     current_ver = get_version(bare)
     filtered = if ver && ver == current_ver, do: [], else: all
     {filtered, current_ver}
@@ -135,9 +160,19 @@ defmodule Exjabberd.Mod.Roster do
     bare = String.downcase("#{user}@#{host}")
 
     case :ets.lookup(@table, {bare, contact_jid}) do
-      [{{_, _}, item}] -> {:ok, item}
-      [] -> :error
+      [{{_, _}, item}] ->
+        {:ok, item}
+
+      [] ->
+        case :mnesia.dirty_read(@mnesia_table, {bare, contact_jid}) do
+          [{@mnesia_table, _, item}] -> {:ok, item}
+          _ -> :error
+        end
     end
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
   end
 
   @doc "Process roster subscription (like `mod_roster:process_subscription/4`). Handles `subscribe`/`subscribed`/`unsubscribe`/`unsubscribed`."
@@ -159,7 +194,7 @@ defmodule Exjabberd.Mod.Roster do
           end
 
         bare = String.downcase("#{user}@#{host}")
-        :ets.insert(@table, {{bare, contact_jid}, new_sub})
+        backend_store(bare, contact_jid, new_sub)
         push_item({bare, new_sub}, host)
         :ok
 
@@ -284,14 +319,40 @@ defmodule Exjabberd.Mod.Roster do
     end
   end
 
-  # Backend abstraction like ejabberd's `db_type`
+  # Backend abstraction like ejabberd's `db_type`. Fase 7: write
+  # through to the shared Mnesia table AND the local ETS cache; a
+  # failed Mnesia write keeps the ETS copy (same pattern as
+  # `Mod.Offline`) and logs, so the item is not silently lost.
   defp backend_store(bare, jid, item) do
-    _ = bare
     :ets.insert(@table, {{bare, jid}, item})
+
+    case :mnesia.transaction(fn -> :mnesia.write({@mnesia_table, {bare, jid}, item}) end) do
+      {:atomic, :ok} ->
+        :ok
+
+      {:aborted, reason} ->
+        Logger.warning("roster: mnesia write failed (#{inspect(reason)}), ETS only")
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp backend_delete(bare, jid) do
     :ets.delete(@table, {bare, jid})
+
+    case :mnesia.transaction(fn -> :mnesia.delete({@mnesia_table, {bare, jid}}) end) do
+      {:atomic, :ok} ->
+        :ok
+
+      {:aborted, reason} ->
+        Logger.warning("roster: mnesia delete failed (#{inspect(reason)}), ETS only")
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 end
 

@@ -103,6 +103,7 @@ defmodule Exjabberd.Admin do
          status: :running,
          version: Exjabberd.version(),
          nodes: Exjabberd.Cluster.nodes(),
+         cluster: Exjabberd.Cluster.status(),
          uptime: System.system_time(:second),
          mnesia: Node.list()
        }}

@@ -102,8 +102,49 @@ defmodule Exjabberd.Auth.Mnesia do
     end
   end
 
+  @doc "SCRAM verifier data for a user on a host (host is ignored: the Mnesia table is global)."
+  @spec get_scram(binary(), binary()) :: {:ok, Scram.credentials()} | :error
+  @impl true
+  def get_scram(_host, user) when is_binary(user), do: get_scram(user)
+
+  @doc "Store SCRAM verifier data verbatim (used by migration)."
+  @spec store_scram_verifier(binary(), binary(), Scram.credentials()) ::
+          :ok | {:error, term()}
+  @impl true
+  def store_scram_verifier(_host, user, creds) when is_binary(user) and is_map(creds) do
+    ensure_ets()
+    ensure_mnesia()
+
+    if valid_creds?(creds) do
+      case write_scram(user, creds) do
+        :ok ->
+          :ets.insert(@table, {user, creds})
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :invalid_credentials}
+    end
+  end
+
+  defp write_scram(user, creds) do
+    case :mnesia.transaction(fn -> :mnesia.write({@mnesia_table, user, creds}) end) do
+      {:atomic, :ok} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  defp valid_creds?(%{salt: s, iterations: i, stored_key: sk, server_key: sv})
+       when is_binary(s) and is_integer(i) and is_binary(sk) and is_binary(sv),
+       do: true
+
+  defp valid_creds?(_), do: false
+
   @doc "All users with stored credentials."
   @spec get_users(binary()) :: [binary()]
+  @impl true
   def get_users(_host) do
     ensure_ets()
 

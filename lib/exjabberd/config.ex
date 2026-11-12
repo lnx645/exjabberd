@@ -105,6 +105,25 @@ defmodule Exjabberd.Config do
   @spec s2s_host_overrides() :: map()
   def s2s_host_overrides, do: get("global", :s2s_host_overrides, %{})
 
+  @doc "Configured auth backend for a host (`auth_method:`, default `:mnesia`)."
+  @spec auth_method(host()) :: atom()
+  def auth_method(host), do: get(host, :auth_method, :mnesia)
+
+  @doc """
+  Configured SQLite auth database path (`auth_sqlite.path` in
+  `exjabberd.yml`, default `"priv/auth.sqlite3"`). The
+  `EXJABBERD_AUTH_SQLITE_PATH` environment variable wins over the
+  file when set — handy for tests and for pointing a deployment at
+  a different file without editing the YAML.
+  """
+  @spec auth_sqlite_path() :: binary()
+  def auth_sqlite_path do
+    case System.get_env("EXJABBERD_AUTH_SQLITE_PATH") do
+      path when is_binary(path) and path != "" -> path
+      _ -> get(:global, :auth_sqlite_path, "priv/auth.sqlite3")
+    end
+  end
+
   @doc "Configured STUN/TURN section (`turn:` in exjabberd.yml), or `%{}`."
   @spec turn() :: map()
   def turn, do: get(:global, :turn, %{})
@@ -117,8 +136,56 @@ defmodule Exjabberd.Config do
   @spec mqtt() :: map()
   def mqtt, do: get(:global, :mqtt, %{})
 
+  @doc """
+  Configured cluster section (`cluster:` in exjabberd.yml), or the
+  defaults: `%{enabled: true, nodes: [], cookie: nil}`. `nodes` is
+  a list of Erlang node names (`"exjabberd-b@hostname"`); `cookie`
+  is the shared Erlang cookie (or nil — see `Exjabberd.Cluster`).
+  """
+  @spec cluster() :: map()
+  def cluster, do: get(:global, :cluster, %{enabled: true, nodes: [], cookie: nil})
+
+  @doc "Is clustering enabled (`cluster.enabled`, default true)?"
+  @spec cluster_enabled?() :: boolean()
+  def cluster_enabled?, do: cluster()[:enabled] != false and cluster()["enabled"] != false
+
+  @doc "Configured cluster peer nodes (`cluster.nodes`), as node atoms."
+  @spec cluster_nodes() :: [node()]
+  def cluster_nodes do
+    nodes = cluster()[:nodes] || cluster()["nodes"] || []
+    List.wrap(nodes) |> Enum.map(&to_string/1) |> Enum.map(&String.to_atom/1)
+  end
+
+  @doc "Configured cluster cookie (`cluster.cookie`), or nil when unconfigured."
+  @spec cluster_cookie() :: binary() | nil
+  def cluster_cookie do
+    cookie = cluster()[:cookie] || cluster()["cookie"]
+    if is_binary(cookie) and cookie != "", do: cookie, else: nil
+  end
+
   defp normalize_key(k) when is_binary(k), do: String.to_atom(k)
   defp normalize_key(k) when is_atom(k), do: k
+
+  # `auth_method:` values, as atoms. Anything unknown warns and
+  # falls back to `:mnesia`.
+  defp parse_auth_method(value) when value in ["mnesia", :mnesia], do: :mnesia
+  defp parse_auth_method(value) when value in ["sqlite", :sqlite], do: :sqlite
+  defp parse_auth_method(value) when value in ["sql", :sql], do: :sql
+  defp parse_auth_method(value) when value in ["ldap", :ldap], do: :ldap
+  defp parse_auth_method(value) when value in ["anonymous", :anonymous], do: :anonymous
+  defp parse_auth_method(value) when value in ["jwt", :jwt], do: :jwt
+  defp parse_auth_method(value) when value in ["external", :external], do: :external
+  defp parse_auth_method(value) when value in ["oauth", :oauth], do: :oauth
+  defp parse_auth_method(value) when value in ["pam", :pam], do: :pam
+
+  defp parse_auth_method(other) do
+    Logger.warning("config auth_method: unknown #{inspect(other)}, using :mnesia")
+    :mnesia
+  end
+
+  defp parse_auth_sqlite_path(%{"path" => path}) when is_binary(path) and path != "", do: path
+  defp parse_auth_sqlite_path(%{path: path}) when is_binary(path) and path != "", do: path
+  defp parse_auth_sqlite_path(_), do: "priv/auth.sqlite3"
 
   # `s2s_host_overrides:` YAML → `%{domain => {host, port}}`.
   # Accepts a `{host:, port:}` map per domain, or a `"host:port"`
@@ -235,6 +302,36 @@ defmodule Exjabberd.Config do
         _ -> %{}
       end
 
+    # Clustering (Fase 7): `cluster:` — `enabled`, `nodes` (list of
+    # Erlang node names, e.g. `"exjabberd-b@hostname"`) and `cookie`
+    # (shared Erlang cookie; env `EXJABBERD_ERLANG_COOKIE` wins over
+    # this value — see Exjabberd.Cluster).
+    cluster_config =
+      case Map.get(data, "cluster", Map.get(data, :cluster, %{})) do
+        map when is_map(map) ->
+          nodes =
+            case Map.get(map, "nodes", Map.get(map, :nodes, [])) do
+              list when is_list(list) -> Enum.map(list, &to_string/1)
+              single when is_binary(single) -> [single]
+              _ -> []
+            end
+
+          cookie =
+            case Map.get(map, "cookie", Map.get(map, :cookie)) do
+              c when is_binary(c) and c != "" -> c
+              _ -> nil
+            end
+
+          %{
+            enabled: Map.get(map, "enabled", Map.get(map, :enabled, true)) != false,
+            nodes: nodes,
+            cookie: cookie
+          }
+
+        _ ->
+          %{enabled: true, nodes: [], cookie: nil}
+      end
+
     # STUN/TURN (`turn:`): port/realm/lifetimes plus the shared
     # secret that signs ephemeral TURN credentials (XEP-0215) and
     # authenticates allocations (RFC 5389 long-term mechanism).
@@ -245,6 +342,20 @@ defmodule Exjabberd.Config do
         map when is_map(map) -> map
         _ -> %{}
       end
+
+    # Auth backend (Fase 8): `auth_method:` — `mnesia` (default),
+    # `sqlite` (real backend, `auth_sqlite.path`), or one of the
+    # stub backends (`sql`, `ldap`, `anonymous`, `jwt`, `external`,
+    # `oauth`, `pam`). Unknown values warn and fall back to Mnesia
+    # so a typo can never lock every account out.
+    auth_method =
+      parse_auth_method(Map.get(data, "auth_method", Map.get(data, :auth_method, "mnesia")))
+
+    # SQLite auth database (`auth_sqlite:`): only `path` for now.
+    # No credentials live here — the file holds SCRAM verifier data
+    # only, never cleartext passwords.
+    auth_sqlite_path =
+      parse_auth_sqlite_path(Map.get(data, "auth_sqlite", Map.get(data, :auth_sqlite, %{})))
 
     turn_shared_secret =
       case Map.get(turn_config, "shared_secret", Map.get(turn_config, :shared_secret)) do
@@ -277,10 +388,12 @@ defmodule Exjabberd.Config do
         |> put_in([Access.key(h, %{}), :access_rules], access_rules)
         |> put_in([Access.key(h, %{}), :shaper], shaper)
         |> put_in([Access.key(h, %{}), :modules], modules)
+        |> put_in([Access.key(h, %{}), :auth_method], auth_method)
       end)
       |> put_in([:global, :listen], listen)
       |> put_in([:global, :acl], acl)
       |> put_in([:global, :access_rules], access_rules)
+      |> put_in([:global, :auth_sqlite_path], auth_sqlite_path)
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
@@ -288,6 +401,7 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :turn_shared_secret], turn_shared_secret)
       |> put_in([:global, :mqtt], mqtt_config)
       |> put_in([:global, :http], http_config)
+      |> put_in([:global, :cluster], cluster_config)
 
     # Validate via Options like ejabberd does
     Enum.each(hosts, fn h ->

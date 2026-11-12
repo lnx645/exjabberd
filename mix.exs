@@ -32,6 +32,9 @@ defmodule Exjabberd.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
       {:telemetry, "~> 1.2"},
+      # SQLite auth backend (Fase 8): Exqlite bundles the SQLite C
+      # library, so no external server is needed.
+      {:exqlite, "~> 0.43"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},

@@ -4,7 +4,8 @@ defmodule Exjabberd.Auth do
 
   Dispatches to configured backend per-host. Supports all ejabberd backends:
   * `:mnesia` - internal (default, `ejabberd_auth_mnesia`)
-  * `:sql` - MySQL, PgSQL, SQLite (`ejabberd_auth_sql`)
+  * `:sqlite` - SQLite file (Fase 8, real backend, `ejabberd_auth_sql` for SQLite)
+  * `:sql` - MySQL, PgSQL (`ejabberd_auth_sql`) — stub, not implemented
   * `:ldap` - LDAP (`ejabberd_auth_ldap`)
   * `:anonymous` - XEP-0078 (`ejabberd_auth_anonymous`)
   * `:jwt` - JWT Bearer (`ejabberd_auth_jwt`)
@@ -95,6 +96,19 @@ defmodule Exjabberd.Auth do
     backend.set_password(host, user, password)
   end
 
+  @doc "Store SCRAM verifier data verbatim (used by migration)."
+  @spec store_scram_verifier(host(), user(), Exjabberd.Auth.Scram.credentials()) ::
+          :ok | {:error, term()}
+  def store_scram_verifier(host, user, creds) do
+    backend = backend_for(host)
+
+    if function_exported?(backend, :store_scram_verifier, 3) do
+      backend.store_scram_verifier(host, user, creds)
+    else
+      {:error, :not_supported}
+    end
+  end
+
   @doc "Get all users for host (ejabberd_auth:get_users)."
   @spec get_users(host()) :: [binary()]
   def get_users(host) do
@@ -102,18 +116,28 @@ defmodule Exjabberd.Auth do
     if function_exported?(backend, :get_users, 1), do: backend.get_users(host), else: []
   end
 
+  @backends %{
+    mnesia: Exjabberd.Auth.Mnesia,
+    sqlite: Exjabberd.Auth.Sqlite,
+    sql: Exjabberd.Auth.Sql,
+    ldap: Exjabberd.Auth.Ldap,
+    anonymous: Exjabberd.Auth.Anonymous,
+    jwt: Exjabberd.Auth.Jwt,
+    external: Exjabberd.Auth.External,
+    oauth: Exjabberd.Auth.Oauth,
+    pam: Exjabberd.Auth.Pam
+  }
+
   defp backend_for(host) do
     case Exjabberd.Config.get(host, :auth_method, :mnesia) do
-      :mnesia -> Exjabberd.Auth.Mnesia
-      :sql -> Exjabberd.Auth.Sql
-      :ldap -> Exjabberd.Auth.Ldap
-      :anonymous -> Exjabberd.Auth.Anonymous
-      :jwt -> Exjabberd.Auth.Jwt
-      :external -> Exjabberd.Auth.External
-      :oauth -> Exjabberd.Auth.Oauth
-      :pam -> Exjabberd.Auth.Pam
-      other when is_binary(other) -> backend_for(String.to_atom(other))
-      _ -> Exjabberd.Auth.Mnesia
+      method when is_atom(method) ->
+        Map.get(@backends, method, Exjabberd.Auth.Mnesia)
+
+      method when is_binary(method) ->
+        Map.get(@backends, String.to_atom(method), Exjabberd.Auth.Mnesia)
+
+      _ ->
+        Exjabberd.Auth.Mnesia
     end
   end
 end
@@ -126,4 +150,14 @@ defmodule Exjabberd.Auth.Behaviour do
   @callback create_user(binary(), binary(), binary()) :: :ok | {:error, term()}
   @callback remove_user(binary(), binary()) :: :ok | {:error, term()}
   @callback set_password(binary(), binary(), binary()) :: :ok | {:error, term()}
+  # Optional: backends that store SCRAM verifiers (Mnesia, SQLite)
+  # expose them so the SCRAM exchange and migration can read/write
+  # verifier data verbatim. Backends that cannot (LDAP, external,
+  # anonymous) simply do not implement them.
+  @callback get_scram(binary(), binary()) ::
+              {:ok, Exjabberd.Auth.Scram.credentials()} | :error
+  @callback get_users(binary()) :: [binary()]
+  @callback store_scram_verifier(binary(), binary(), Exjabberd.Auth.Scram.credentials()) ::
+              :ok | {:error, term()}
+  @optional_callbacks get_scram: 2, get_users: 1, store_scram_verifier: 3
 end

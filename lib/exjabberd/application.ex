@@ -28,7 +28,15 @@ defmodule Exjabberd.Application do
 
   @impl true
   def start(_type, _args) do
-    :ok = Exjabberd.Mnesia.setup()
+    # Clustering (Fase 7): the Erlang cookie must be applied before
+    # any Node.connect (the Mnesia join below connects to a peer).
+    # This first call is a no-op while the node is still
+    # :nonode@nohost; it runs again after setup_mnesia/0, once
+    # distribution is up. The YAML file loads later, and
+    # apply_cookie/0 runs again then.
+    Exjabberd.Cluster.apply_cookie()
+    setup_mnesia()
+    Exjabberd.Cluster.apply_cookie()
 
     children = [
       {Exjabberd.Config, []},
@@ -42,7 +50,11 @@ defmodule Exjabberd.Application do
       {Exjabberd.Mod.Supervisor, []},
       {Exjabberd.Mod.Muc.Supervisor, []},
       {Exjabberd.Mqtt.Broker, []},
-      {Exjabberd.Auth.Mnesia, []}
+      {Exjabberd.Auth.Mnesia, []},
+      # SQLite auth backend (Fase 8): opens its database file lazily
+      # on first use, so a missing/unwritable path can never crash
+      # the boot — calls fail loudly instead.
+      {Exjabberd.Auth.Sqlite, []}
     ]
 
     opts = [strategy: :one_for_one, name: Exjabberd.Supervisor]
@@ -66,6 +78,9 @@ defmodule Exjabberd.Application do
       case Exjabberd.Config.load_file(config_file) do
         :ok ->
           Logger.info("exjabberd config loaded from #{config_file}")
+          # The YAML file may carry cluster.cookie — apply it now,
+          # before the Cluster auto-connect loop fires.
+          Exjabberd.Cluster.apply_cookie()
 
         {:error, reason} ->
           Logger.warning("config load failed (#{inspect(reason)}), using defaults")
@@ -95,6 +110,33 @@ defmodule Exjabberd.Application do
     end
 
     {:ok, sup}
+  end
+
+  # Mnesia boot (Fase 7): join an existing cluster when
+  # EXJABBERD_CLUSTER_JOIN (or `config :exjabberd, cluster_join:`)
+  # names a peer; otherwise the standalone schema. A failed join
+  # falls back to standalone so the node still boots.
+  defp setup_mnesia do
+    join_peer =
+      System.get_env("EXJABBERD_CLUSTER_JOIN") ||
+        Application.get_env(:exjabberd, :cluster_join)
+
+    case join_peer do
+      nil ->
+        :ok = Exjabberd.Mnesia.setup()
+
+      peer when is_binary(peer) ->
+        case Exjabberd.Mnesia.setup_cluster_join(String.to_atom(peer)) do
+          :ok -> :ok
+          {:error, _} -> :ok = Exjabberd.Mnesia.setup()
+        end
+
+      peer when is_atom(peer) ->
+        case Exjabberd.Mnesia.setup_cluster_join(peer) do
+          :ok -> :ok
+          {:error, _} -> :ok = Exjabberd.Mnesia.setup()
+        end
+    end
   end
 
   defp ensure_dialback_secret do

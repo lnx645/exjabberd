@@ -39,12 +39,18 @@ defmodule Exjabberd.Router do
     :ok
   end
 
-  @doc "Unregister route (ejabberd_router:unregister_route)."
+  @doc "Unregister route (ejabberd_router:unregister_route). The cluster mirror entry is only removed when it still points at the pid this node registered, so one node's teardown never removes another node's live route for the same JID."
   @spec unregister_route(binary()) :: :ok
   def unregister_route(domain_or_jid) do
+    pid =
+      case :ets.lookup(__MODULE__, domain_or_jid) do
+        [{_, p, _}] -> p
+        [] -> nil
+      end
+
     :ets.delete(__MODULE__, domain_or_jid)
     :ets.delete(:exjabberd_router_cache, domain_or_jid)
-    Exjabberd.Cluster.unregister_route(domain_or_jid)
+    Exjabberd.Cluster.unregister_route(domain_or_jid, pid)
     :ok
   end
 
@@ -327,8 +333,11 @@ defmodule Exjabberd.Router do
 
   defp split_jid(_), do: {"", ""}
 
-  # Broadcast a bare presence to every online local session except the
-  # resource that sent it.
+  # Broadcast a bare presence to every online session except the
+  # resource that sent it. Cluster-wide (Fase 7): all_sessions/0
+  # includes sessions on other nodes, so presence crosses the
+  # cluster — the roster-subscription simplification (broadcast to
+  # every online session) is unchanged, only its scope grew.
   defp broadcast_presence(stanza) do
     sender_pid = sender_pid(stanza)
 
@@ -381,12 +390,26 @@ defmodule Exjabberd.Router do
             if Process.alive?(pid), do: {:ok, pid}, else: :error
 
           _ ->
-            Exjabberd.Cluster.lookup_route(jid)
-            |> then(fn
-              {:ok, pid, _} -> {:ok, pid}
-              :error -> :error
-            end)
+            lookup_mirror(jid)
         end
+    end
+  end
+
+  # Cluster mirror — may point at a session on another node.
+  # Remote pids need the :rpc liveness probe: Process.alive?
+  # raises ArgumentError on them.
+  defp lookup_mirror(jid) do
+    case Exjabberd.Cluster.lookup_route(jid) do
+      {:ok, pid, _} ->
+        if Exjabberd.Cluster.alive?(pid) do
+          {:ok, pid}
+        else
+          Exjabberd.Cluster.unregister_route(jid, pid)
+          :error
+        end
+
+      :error ->
+        :error
     end
   end
 

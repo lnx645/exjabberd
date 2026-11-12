@@ -62,31 +62,72 @@ default. Passwords are stored as SCRAM-SHA-256 verifier data only
 
 ## Tests
 
+One command runs the whole verification — ExUnit plus every probe,
+against real servers:
+
 ```sh
-# Stop any dev server first: the suite boots the app on port 5222.
+./verify.sh
+```
+
+It fetches dependencies (`mix deps.get`, a no-op when `deps/` is
+already populated), compiles (warnings are errors), runs `mix test`, boots a
+single-node dev server and runs every single-node probe, then the
+SQLite probe (which boots its own server), then the two-node S2S
+probes, then the two-node cluster probe — stopping every server it
+started, and printing a per-step PASS/FAIL summary at the end
+(logs in `/tmp/exjabberd-verify-logs/`). All green on 2026-11-11
+from a fresh clone: 19/19 steps. Requirements: Elixir ~> 1.19 / OTP 28 on PATH (or
+`$EXJABBERD_TOOLCHAIN`, default `$HOME/workspace/.toolchain`) and
+Python with slixmpp + paho-mqtt (`$EXJABBERD_PY`, or
+`$HOME/workspace/.venv-xmpp/bin/python`); no server already
+listening on the test ports.
+
+`mix test` alone (119 tests, 0 failures) needs a clean run — wipe
+the test Mnesia dir first, and stop any dev server (the suite boots
+the app on port 5222 itself):
+
+```sh
+rm -rf mnesia_data_test
 ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix test
 ```
 
-The suite has unit tests (`StreamParser`, `Scram`, carbons
-eligibility, CSI policy) and live C2S integration tests
-(`test/exjabberd/live_c2s_test.exs`,
-`test/exjabberd/sm_carbons_csi_test.exs`,
-`test/exjabberd/mam_pubsub_test.exs`) that speak real XMPP
-over a raw socket: login, roster, disco, ping, time, version,
-presence, 1-1 messages, MUC, offline messages, in-band registration,
-malformed/oversized stanzas, STARTTLS and SCRAM-SHA-256, plus
-stream-management ack/resume, message carbons and CSI queue/flush,
-MAM archive/query/prefs and PubSub node lifecycle.
-`test_sm_carbons_csi.py` at the repo root is the repeatable
-raw-socket probe for the same three features against a running
-dev server; `test_mam_pubsub.py` (raw sockets) and
-`test_mam_pubsub_slix.py` (slixmpp 1.17, plugins `xep_0313` and
-`xep_0060`) are the repeatable probes for MAM and PubSub.
-`test/exjabberd/http_test.exs` is the ExUnit suite for the HTTP
-stack (admin, REST API, BOSH, WebSocket, upload), and
-`test_http_phase4.py` is the repeatable end-to-end probe for the
-same (raw BOSH + raw-socket WebSocket clients, `curl`-equivalent
-HTTP calls, admin UI flows).
+| Suite | File | Tests |
+|---|---|---|
+| Stream parser | `test/exjabberd/xmpp/stream_parser_test.exs` | 8 |
+| SCRAM | `test/exjabberd/auth/scram_test.exs` | 5 |
+| SQLite auth + migration | `test/exjabberd/auth/sqlite_test.exs` | 10 |
+| Cluster | `test/exjabberd/cluster_test.exs` | 16 |
+| HTTP stack | `test/exjabberd/http_test.exs` | 9 |
+| Jingle / OMEMO / STUN / TURN | `test/exjabberd/jingle_omemo_test.exs` | 11 |
+| Live C2S | `test/exjabberd/live_c2s_test.exs` | 12 |
+| MAM / PubSub | `test/exjabberd/mam_pubsub_test.exs` | 8 |
+| MQTT codec + broker | `test/exjabberd/mqtt_test.exs` | 15 |
+| S2S dialback | `test/exjabberd/s2s_dialback_test.exs` | 5 |
+| SM / Carbons / CSI | `test/exjabberd/sm_carbons_csi_test.exs` | 9 |
+| STUN / TURN codec | `test/exjabberd/stun_turn_test.exs` | 11 |
+
+The repeatable wire probes at the repo root (all run by
+`verify.sh`):
+
+| Probe | What it proves | Result |
+|---|---|---|
+| `audit_raw_test.py` | C2S core over raw sockets | 18/18 |
+| `audit_slix_test.py` | C2S core with slixmpp 1.17 | 10/10 |
+| `test_sm_carbons_csi.py` | XEP-0198 / 0280 / 0352 | 36/36 |
+| `test_mam_pubsub.py` / `test_mam_pubsub_slix.py` | MAM + PubSub, raw / slixmpp | 47/47, 12/12 |
+| `test_s2s.py` / `test_s2s_slix.py` | S2S dialback, two nodes (boot with `./boot_s2s_nodes.sh start`) | 17/17, 4/4 |
+| `test_http_phase4.py` | admin + REST API + BOSH + WebSocket + upload | 46/46 |
+| `test_jingle_phase5.py` | Jingle + extdisco + OMEMO | 25/25 |
+| `test_stun_turn_phase5.py` | STUN/TURN (TCP live; UDP skips in the sandbox, see below) | 2/2 |
+| `test_mqtt_phase6.py` | MQTT 3.1.1 + PubSub bridge | 28/28 |
+| `test_cluster_phase7.py` | clustering, two nodes (boot with `./boot_cluster_nodes.sh start`) | 22/22 |
+| `test_auth_sqlite_phase8.py` | SQLite auth + migration (boots its own server) | 19/19 |
+
+286 wire-probe checks in total, all passing. Formatting: a
+`.formatter.exs` exists now (added in Fase 9); the files changed in
+Fase 9 are `mix format`-clean. The rest of the repo predates it and
+is deliberately NOT reformatted in one sweep — a repo-wide
+`mix format` is a separate cleanup, not a parity change.
 
 ## Verified features
 
@@ -99,13 +140,13 @@ probe `test_s2s_slix.py` 4/4, probe `test_http_phase4.py` 46/46,
 probe `test_jingle_phase5.py` 25/25, probe
 `test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
 sandbox — see the Fase 5 limits below), probe
-`test_mqtt_phase6.py` 28/28. `mix test` has 93 tests (15 new MQTT
-codec/broker tests, all passing); the full suite reports the same 33
-failures as the clean Fase 5 baseline in this sandbox (78 tests, 33
-failures) — live-socket tests that time out here while the same
-features pass over the wire in the Python probes, so they are a
-sandbox flake, not a regression (verified by running the baseline
-tree and this tree side by side).
+`test_mqtt_phase6.py` 28/28, probe `test_cluster_phase7.py`
+22/22, probe `test_auth_sqlite_phase8.py` 19/19. `mix test` is
+119/119 green. Run it all yourself with `./verify.sh`
+(19/19 steps green). The honest per-area score is in
+[`docs/PARITY.md`](docs/PARITY.md): **≈60% of the 64-item
+checklist — not 100%**. What is verified is listed below; what is
+not is in [Not implemented](#not-implemented).
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
 * SASL PLAIN and **SCRAM-SHA-256** (RFC 5802, channel binding `n` and
@@ -415,6 +456,74 @@ tree and this tree side by side).
   it needs a second working copy of the repo, which this phase's
   scope forbids; the single-node S2S probe (`test_s2s_slix.py`)
   still passes 4/4 and no S2S code was touched.
+* **Clustering (Fase 7, distributed Erlang, multi-node, same
+  domain)**: two (or more) nodes with the SAME domain and the SAME
+  Erlang cookie form one cluster. Session and route registrations
+  are mirrored cluster-wide (`Exjabberd.Cluster` ETS mirrors,
+  broadcast on register/unregister, full state exchange on
+  `:nodeup`, purge on `:nodedown`), so a message, presence or IQ
+  from a user on node A reaches a user on node B without the
+  sender knowing which node the recipient is on — and NOT via S2S
+  (S2S stays for foreign domains only). Presence is broadcast to
+  every online session in the cluster. On `:nodedown` the dead
+  node's sessions are purged, an `unavailable` presence is
+  broadcast for each of its users, and messages to them fall
+  through to the normal offline/error path (stored offline when
+  the user exists, `service-unavailable` otherwise — never a
+  hang). A node that returns rejoins on its own: the
+  auto-connect loop retries `cluster.nodes` every 5 s, and a node
+  booted with `EXJABBERD_CLUSTER_JOIN=<peer>` re-copies the
+  cluster schema. Configuration lives in the `cluster:` section
+  of `exjabberd.yml` (`enabled`, `nodes`, `cookie`) — no
+  hardcoding; the cookie may also come from
+  `EXJABBERD_ERLANG_COOKIE` or `config :exjabberd,
+  cluster_cookie:`. When no cookie is configured the node's
+  default cookie (`~/.erlang.cookie`, generated by Erlang itself
+  when missing) stays in effect — deliberately no per-boot random
+  cookie is generated, because it would break `:rpc` tooling
+  (probes, remote shells) without making clustering work: two
+  nodes still need the SAME cookie. Verified live with two real
+  nodes (`boot_cluster_nodes.sh` + `test_cluster_phase7.py`,
+  22/22): mutual visibility, chat both ways, presence both ways,
+  roster shared, accounts shared, kill B → unavailable presence
+  + message stored offline, restart B → cluster reforms +
+  offline message delivered on relogin + chat works again.
+  Shared Mnesia tables (`disc_copies` on every joined node):
+  `:passwd`, `:roster`, `:offline_messages`, `:mam_archive`,
+  `:pubsub_nodes`, `:pubsub_items`, `:pubsub_subs`,
+  `:pubsub_affs`. Roster items are written through to Mnesia as
+  well as the local ETS cache (Fase 7 change in `Mod.Roster`).
+  Join mechanics worth knowing: a joining node wipes its own
+  fresh schema directory and starts Mnesia with `extra_db_nodes`
+  pointing at the peer, so it copies the cluster schema; the
+  local schema must become `disc_copies` BEFORE table replicas
+  are added (`add_table_copy` fails with "has no disc" otherwise,
+  and `change_table_copy_type` cannot add a copy where none
+  exists — `Exjabberd.Mnesia.ensure_table/2` now handles the
+  no-local-copy case with `add_table_copy`); `Process.alive?/1`
+  raises `ArgumentError` for remote pids, so remote liveness is
+  checked with an `:rpc` probe (`Exjabberd.Cluster.alive?/1`);
+  `:net_kernel.monitor_nodes(true)` sends 2-tuples
+  `{:nodeup | :nodedown, node}` — handlers must match both the
+  2-tuple and the 3-tuple form; `net_ticktime` 10 s in the boot
+  script keeps dead-node detection near 10 s instead of 60 s.
+  Admin visibility: `Exjabberd.Cluster.status/0` (also in the
+  admin `:status` command) reports nodes, cookie state, Mnesia
+  state and session counts; the cookie value is never exposed.
+  Limits: MUC rooms, vCards, Stream Management resume state and
+  per-host ETS caches stay node-local (an SM resume must hit the
+  node that holds the session); the roster version counter is
+  per-node (versions are random strings, so divergence is
+  harmless); two nodes that already have independent Mnesia
+  schemas cannot merge live — session routing still works, but
+  tables stay unshared until the node is restarted with
+  `EXJABBERD_CLUSTER_JOIN`; a user bound with the same resource
+  on two nodes at once is last-registration-wins in the mirror
+  (each node's local routing still works); the mirror is
+  eventually consistent (broadcast + nodeup sync), so a stanza
+  sent in the ~1 s window before a join sync may miss a
+  just-registered remote session and fall through to offline
+  storage instead.
 
   Honest limits of this phase (not bugs, just not built yet):
   the server does no media processing and no DTLS/SRTP — Jingle
@@ -441,25 +550,121 @@ tree and this tree side by side).
   Run `test_stun_turn_phase5.py` where UDP is allowed for the
   full UDP wire proof.
 
+* **SQLite auth backend (Fase 8, `auth_method: sqlite`)**: the
+  first real non-Mnesia backend. `Exjabberd.Auth.Sqlite` stores
+  exactly the same SCRAM-SHA-256 verifier data as the Mnesia
+  backend (salt, iteration count, StoredKey, ServerKey — raw
+  bytes as BLOBs, one row per `(host, user)` in a `passwd` table
+  in the configured file), so PLAIN and SCRAM-SHA-256 logins
+  verify identically on either backend and an account keeps its
+  password when it moves. Selection is per-host from
+  `auth_method:` in `exjabberd.yml` (default stays `mnesia`, so
+  existing installs are untouched); the file comes from
+  `auth_sqlite.path` (default `priv/auth.sqlite3`) or the
+  `EXJABBERD_AUTH_SQLITE_PATH` environment variable, never from a
+  hardcoded path, and the file holds verifier data only — no
+  credentials are configured anywhere. All access is serialized
+  through one GenServer connection (WAL mode, `busy_timeout`
+  5000). The behaviour is now complete (`Exjabberd.Auth.Behaviour`
+  gained optional `get_scram/2`, `get_users/1`,
+  `store_scram_verifier/3` callbacks; the Mnesia backend
+  implements them, the stub backends do not need to). Moving
+  accounts: `mix exjabberd.auth.migrate --from mnesia --to sqlite`
+  copies every user's verifier verbatim (`--dry-run` counts
+  without writing; the source is never modified, so it stays as a
+  rollback — switch the server over afterwards with
+  `auth_method: sqlite`). Verified live (`test_auth_sqlite_phase8.py`,
+  real slixmpp clients): create → PLAIN + SCRAM login → server
+  restart → login still works → password change (old fails, new
+  works) → delete (login fails); a Mnesia-created user logs in on
+  SQLite after migration with the same password; plus 10 ExUnit
+  tests (`test/exjabberd/auth/sqlite_test.exs`) including
+  persistence across a backend restart and the verbatim-verifier
+  round-trip. Honest limits of this phase: PostgreSQL/MySQL are
+  NOT implemented — no PostgreSQL server exists in this sandbox
+  to verify against, so the `:sql` backend stays an honest stub
+  instead of an untested claim; LDAP/JWT/OAuth/external/PAM stay
+  stubs too; the SQLite backend is single-file (no clustering of
+  the auth store itself — a cluster still shares accounts through
+  Mnesia, see Fase 7); Mnesia has a pre-existing persistence
+  quirk worth knowing — a VM halted abruptly (e.g. `mix run -e`
+  exiting) can lose the not-yet-flushed transaction log, so
+  accounts created that way may vanish on the next boot, while a
+  clean server stop (SIGTERM, which stops Mnesia properly) keeps
+  them — the probe stops the server with SIGTERM for exactly this
+  reason. A second lesson from this phase: stopping the supervised
+  SQLite server repeatedly trips the supervisor's restart
+  intensity (3 restarts in 5 s) and takes the whole application
+  down — so the backend exposes `close/0` (release the
+  connection, reopen lazily) instead of being stopped.
+
 ## Not implemented
 
 Honest list — these were claimed by the old code/config and are not
-there. Do not rely on them until they land:
+there. Do not rely on them until they land. The full per-area table
+with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
+(34 verified / 9 partial / 21 not, ≈60% of the 64-item checklist).
 
 * **HTTP stack (remaining)**: no TLS HTTP listener (5443), no
   captcha endpoint, no ACME challenge handling, no HTTP/2.
+  Admin has no MUC/PubSub management pages; upload has no per-user
+  quota and no virus scanning; BOSH `hold` is fixed at 1 and only
+  the last 5 responses are kept for `rid` replay; Stream Management
+  `<resume/>` across BOSH/WebSocket connections is refused.
 * **MIX** (XEP-0369): the module exists as a partial implementation;
   not verified over the wire.
-* **Clustering**: single node only.
-* **Auth backends other than Mnesia** (SQL, LDAP, JWT, anonymous,
-  OAuth, external, PAM): stubs that return `false` / `not_implemented`.
+* **MUC (beyond basics)**: join / presence / groupchat / leave work,
+  but there are no affiliations/roles, room configuration, room
+  passwords, bans, or persistent-room admin.
+* **PubSub (edges)**: collection nodes are rejected; `authorize`
+  access model records subscriptions as `pending` but owner approval
+  is not implemented; `presence` / `roster` access models behave
+  like `open` for local users.
+* **Auth backends other than Mnesia and SQLite** (SQL/PostgreSQL/
+  MySQL, LDAP, JWT, OAuth, external, PAM): stubs that return
+  `false` / `not_implemented`. (`anonymous` works as before, but was
+  not re-probed in Fase 1–9; SQLite is real since Fase 8, see above.)
 * **Roster subscription requests** (subscribe/subscribed flows):
-  presence is broadcast to all local sessions for now.
+  presence is broadcast to all sessions in the cluster for now.
 * `starttls_required`: STARTTLS is offered but optional; PLAIN/SCRAM
   also work without TLS.
+* **S2S (edges)**: no SASL EXTERNAL, no bidirectional streams
+  (XEP-0288); TLS peer verification is off (`verify_none`,
+  self-signed dev certificate); the dialback verify connection is
+  plain TCP; multi-host sender selection is not done.
+* **Jingle / media**: signaling only — no media processing, no
+  DTLS/SRTP; federated Jingle is routed but the session is only
+  tracked on the node that saw the initiate.
+* **STUN/TURN live UDP proof**: TURN over TCP is verified live (2/2),
+  but the sandbox blocks UDP `sendto` with EPERM, so the live UDP
+  STUN/TURN wire checks could not run there — the logic is covered
+  in-process only. Run `test_stun_turn_phase5.py` where UDP is
+  allowed for the full proof. TURN has no per-user quota beyond the
+  global `max_allocations`.
+* **OMEMO generations `:1` / `:2`**: only the legacy generation is
+  implemented and advertised.
+* **MQTT 5.0**: the broker speaks MQTT v3.1.1 only.
+* **Clustering (edges)**: MUC rooms, vCards, Stream Management
+  resume state and per-host ETS caches stay node-local; two nodes
+  with independent Mnesia schemas cannot merge live; a user bound
+  with the same resource on two nodes is last-registration-wins.
+* **Long-tail modules**: vCard, private XML storage, privacy lists /
+  blocking, last activity, ad-hoc commands, SOCKS5 bytestreams
+  (proxy65), Push, shared roster, avatars, caps, announce and the
+  rest exist as partial implementations that load at boot — none of
+  them is verified over the wire. "39 modules start at boot" means
+  they load, not that they work.
 
 ## Layout
 
+* `lib/exjabberd/cluster/cluster.ex` — Fase 7 clustering: node
+  auto-connect + monitor, session/route ETS mirrors, state sync,
+  node-down purge + unavailable presence, Mnesia join, cookie
+  handling, `status/0`; `lib/exjabberd/mnesia.ex` —
+  `setup_cluster_join/1` (extra_db_nodes schema copy) +
+  `cluster_tables/0`.
+* `boot_cluster_nodes.sh` — boots two cluster nodes from working
+  copies in /tmp for `test_cluster_phase7.py` (22/22 live checks).
 * `lib/exjabberd/listener/c2s_listener.ex` — TCP accept loop, stream
   parser, SASL, STARTTLS, IQ dispatch.
 * `lib/exjabberd/listener/s2s_listener.ex` — inbound S2S accept loop,
@@ -470,6 +675,14 @@ there. Do not rely on them until they land:
   verification + the dialback verify connection.
 * `lib/exjabberd/xmpp/stream_parser.ex` — incremental stanza splitter.
 * `lib/exjabberd/auth/scram.ex` — SCRAM-SHA-256 (RFC 5802).
+* `lib/exjabberd/auth/sqlite.ex` — Fase 8 SQLite auth backend
+  (Exqlite, same SCRAM verifier format as Mnesia, BLOB columns,
+  serialized GenServer connection, lazy open from config);
+  `lib/exjabberd/auth/migrate.ex` + `mix exjabberd.auth.migrate`
+  — verbatim-verifier migration between backends;
+  `test/exjabberd/auth/sqlite_test.exs` — backend + migration
+  unit tests; `test_auth_sqlite_phase8.py` — live probe (slixmpp
+  PLAIN + SCRAM, restart persistence, migration).
 * `lib/exjabberd/tls.ex` — self-signed dev certificate.
 * `lib/exjabberd/mod/offline.ex` — offline message store.
 * `lib/exjabberd/mod/stream_mgmt.ex` — XEP-0198 registry + config.
@@ -533,3 +746,17 @@ there. Do not rely on them until they land:
   flows as repeatable raw-socket probes.
 * `lib/exjabberd/mnesia.ex` — Mnesia setup (schema + disc_copies).
 * `test/` — unit + live C2S integration tests.
+* `verify.sh` — Fase 9: one-command full verification (compile +
+  `mix test` + single-node probes + SQLite probe + S2S probes +
+  cluster probe, 19 steps, all green 2026-11-11 from a fresh clone); logs in
+  `/tmp/exjabberd-verify-logs/`.
+* `boot_s2s_nodes.sh` — Fase 9: boots the two S2S nodes for
+  `test_s2s.py` / `test_s2s_slix.py` (a.localhost ↔ b.localhost,
+  test dialback secrets, host overrides), modeled on
+  `boot_cluster_nodes.sh`.
+* `docs/PARITY.md` — Fase 9: honest parity assessment (64-item
+  checklist, 34 verified / 9 partial / 21 not, ≈60%) with the
+  evidence table and the counting method.
+* `.formatter.exs` — Fase 9: `mix format` config (files changed in
+  Fase 9 are format-clean; the older tree predates it and is not
+  reformatted in one sweep).

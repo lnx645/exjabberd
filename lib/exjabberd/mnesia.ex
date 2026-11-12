@@ -162,12 +162,153 @@ defmodule Exjabberd.Mnesia do
   end
 
   @doc """
-  Directory holding the on-disk Mnesia schema.
-
-  Configurable via `config :exjabberd, mnesia_dir: <path>` (the test
-  environment uses its own directory so its schema never collides
-  with the dev server's — a Mnesia schema belongs to one node name).
+  Tables replicated across the cluster (Fase 7). Attributes are the
+  source of truth for `setup_cluster_join/1`; modules that own one
+  of these tables must keep the same attributes in their own
+  `ensure_table` calls.
   """
+  @spec cluster_tables() :: [{atom(), [atom()]}]
+  def cluster_tables do
+    [
+      passwd: [:user, :scram],
+      offline_messages: [:key, :stanza],
+      mam_archive: [:key, :record],
+      pubsub_nodes: [:key, :value],
+      pubsub_items: [:key, :value],
+      pubsub_subs: [:key, :value],
+      pubsub_affs: [:key, :value],
+      roster: [:key, :item]
+    ]
+  end
+
+  @doc """
+  Start Mnesia JOINED to an existing cluster node (Fase 7).
+
+  Called at boot when `EXJABBERD_CLUSTER_JOIN` (or `config
+  :exjabberd, cluster_join:`) names a peer. Steps:
+
+  1. Make sure distribution is running and the Erlang cookie is
+     applied (env/app-env sources — the YAML file is not loaded yet
+     at this point in the boot).
+  2. `Node.connect/1` the peer with retries (up to ~20 s). If the
+     peer cannot be reached, return `{:error, reason}` and the
+     caller falls back to standalone `setup/0` — the node still
+     boots, keeps its own schema, and retries the Erlang-level
+     connection via the Cluster auto-connect loop.
+  3. Only AFTER the peer answers: stop Mnesia, wipe this node's own
+     schema directory (a fresh join has nothing worth keeping; a
+     node that already shared this cluster's schema re-copies it
+     from the peer), and start Mnesia with `extra_db_nodes` set so
+     it copies the cluster schema from the peer.
+  4. Add `disc_copies` of every shared table on this node, so the
+     data is durable here too and survives a peer outage.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec setup_cluster_join(node()) :: :ok | {:error, term()}
+  def setup_cluster_join(peer) when is_atom(peer) do
+    ensure_distribution()
+    Exjabberd.Cluster.apply_cookie()
+
+    case connect_with_retry(peer, 20_000) do
+      :ok ->
+        join_mnesia_schema(peer)
+
+      {:error, reason} = err ->
+        Logger.warning(
+          "mnesia: cannot reach cluster peer #{peer} (#{inspect(reason)}); " <>
+            "falling back to standalone schema — restart with EXJABBERD_CLUSTER_JOIN=#{peer} " <>
+            "once #{peer} is up to share Mnesia tables"
+        )
+
+        err
+    end
+  end
+
+  # Steps 3-4 of the join, split out so setup_cluster_join/1 stays
+  # under Credo's complexity limit.
+  defp join_mnesia_schema(peer) do
+    :ok = Application.ensure_loaded(:mnesia)
+
+    case :mnesia.system_info(:is_running) do
+      :yes -> :stopped = :mnesia.stop()
+      _ -> :ok
+    end
+
+    dir = mnesia_dir()
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+    Application.put_env(:mnesia, :dir, String.to_charlist(dir))
+    Application.put_env(:mnesia, :extra_db_nodes, [peer])
+
+    :ok = :mnesia.start()
+
+    case :mnesia.wait_for_tables([:schema], 10_000) do
+      :ok ->
+        :ok
+
+      other ->
+        Logger.warning("mnesia cluster join: wait_for_tables :schema: #{inspect(other)}")
+    end
+
+    # The schema itself must become a disc schema FIRST: Mnesia
+    # refuses `disc_copies` table replicas on a node whose
+    # schema is still `ram_copies` ("has no disc"). The schema
+    # copied from the peer via extra_db_nodes starts as ram.
+    case :mnesia.change_table_copy_type(:schema, node(), :disc_copies) do
+      {:atomic, :ok} ->
+        Logger.info("mnesia: local schema is now disc_copies")
+
+      {:aborted, reason} ->
+        Logger.warning("mnesia: cannot make schema disc_copies (#{inspect(reason)})")
+    end
+
+    for {table, attrs} <- cluster_tables(), table in :mnesia.system_info(:tables) do
+      ensure_table(table, attrs)
+    end
+
+    Logger.info("mnesia: joined cluster via #{peer} (schema + shared tables copied)")
+    :ok
+  end
+
+  defp ensure_distribution do
+    if node() == :nonode@nohost do
+      name =
+        (System.get_env("EXJABBERD_NODE_NAME") || "exjabberd")
+        |> String.to_atom()
+
+      case :net_kernel.start([name, :shortnames]) do
+        {:ok, _} ->
+          Logger.info("mnesia: distribution started as #{node()}")
+
+        {:error, reason} ->
+          Logger.warning("mnesia: cannot start distribution (#{inspect(reason)})")
+      end
+    end
+
+    :ok
+  end
+
+  defp connect_with_retry(peer, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    connect_loop(peer, deadline)
+  end
+
+  defp connect_loop(peer, deadline) do
+    case Node.connect(peer) do
+      true ->
+        :ok
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(1_000)
+          connect_loop(peer, deadline)
+        else
+          {:error, :cannot_connect}
+        end
+    end
+  end
+
   @spec mnesia_dir() :: binary()
   def mnesia_dir do
     Application.get_env(:exjabberd, :mnesia_dir) ||
@@ -202,9 +343,32 @@ defmodule Exjabberd.Mnesia do
     current = :mnesia.table_info(table, :attributes)
 
     if current == attributes do
-      case :mnesia.table_info(table, :disc_copies) do
-        [n] when n == node() -> :ok
-        _ -> change_to_disc_copies(table)
+      disc = :mnesia.table_info(table, :disc_copies)
+      ram = :mnesia.table_info(table, :ram_copies)
+
+      cond do
+        node() in disc ->
+          :ok
+
+        node() in ram ->
+          change_to_disc_copies(table)
+
+        true ->
+          # The table exists cluster-wide but this node holds no
+          # copy yet (fresh cluster join): add a local disc_copies
+          # replica. `change_table_copy_type` cannot do this — it
+          # only retypes an EXISTING copy (and fails with
+          # `{:badarg, table, :unknown}` when there is none).
+          case :mnesia.add_table_copy(table, node(), :disc_copies) do
+            {:atomic, :ok} ->
+              :ok
+
+            {:aborted, {:already_exists, _, _}} ->
+              :ok
+
+            {:aborted, reason} ->
+              Logger.warning("mnesia add_table_copy #{table}: #{inspect(reason)}")
+          end
       end
     else
       migrate_table(table, current, attributes)

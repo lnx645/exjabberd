@@ -67,6 +67,25 @@ defmodule Exjabberd.LiveC2STest do
     end
   end
 
+  # Like recv_until/3, but waits until ALL needles are present.
+  # Two markers of one stanza (e.g. MUC self-presence status codes
+  # 110 + 201) can arrive in separate TCP chunks; waiting for one
+  # needle only and then asserting the other flakes.
+  defp recv_until_all(sock, needles, timeout \\ 6_000) do
+    recv_until_all(sock, needles, timeout, "")
+  end
+
+  defp recv_until_all(sock, needles, timeout, acc) do
+    if Enum.all?(needles, &String.contains?(acc, &1)) do
+      acc
+    else
+      case sock_recv(sock, timeout) do
+        {:ok, data} -> recv_until_all(sock, needles, timeout, acc <> data)
+        {:error, _} -> acc
+      end
+    end
+  end
+
   defp sock_recv(sock, timeout) when is_port(sock), do: :gen_tcp.recv(sock, 0, timeout)
   defp sock_recv({:ssl, ssl_sock}, timeout), do: :ssl.recv(ssl_sock, 0, timeout)
 
@@ -231,7 +250,7 @@ defmodule Exjabberd.LiveC2STest do
         "<presence to='#{room}@conference.localhost/andi'><x xmlns='http://jabber.org/protocol/muc'/></presence>"
       )
 
-    r = recv_until(a, "110")
+    r = recv_until_all(a, ["110", "201"])
     assert r =~ "110" and r =~ "201"
 
     :ok =
@@ -249,7 +268,7 @@ defmodule Exjabberd.LiveC2STest do
         "<message to='#{room}@conference.localhost' type='groupchat' id='g1'><body>halo room</body></message>"
       )
 
-    r = recv_until(b, "halo room")
+    r = recv_until_all(b, ["halo room", "#{room}@conference.localhost/andi"])
     assert r =~ "halo room" and r =~ "#{room}@conference.localhost/andi"
 
     :ok =

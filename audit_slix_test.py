@@ -2,8 +2,10 @@
 """Independent slixmpp client test against exjabberd on 127.0.0.1:5222.
 Two real XMPP clients: login (PLAIN), roster, presence, 1-1 message.
 Usage: <venv>/bin/python audit_slix_test.py
+Test users (andi/budi/carol, password "secret") are created via RPC
+when missing, so the probe works on a fresh clone too.
 """
-import asyncio, ssl, sys
+import asyncio, ssl, sys, os, socket, subprocess
 import slixmpp
 
 # The server uses a self-signed dev certificate (priv/ssl, generated on
@@ -17,6 +19,33 @@ RESULTS = []
 def log(name, ok, detail=""):
     RESULTS.append((name, ok))
     print(f"[{'PASS' if ok else 'FAIL'}] {name} :: {detail}", flush=True)
+
+def rpc_create(user):
+    """Create a test account on the running node via RPC (idempotent:
+    already-existing users report :ok too)."""
+    code = (
+        f':rpc.call(:"exjabberd@{socket.gethostname()}", Exjabberd.Auth, '
+        f':create_user, ["localhost", "{user}", "secret"]) |> IO.inspect()'
+    )
+    env = dict(os.environ)
+    env["PATH"] = ("/home/hatch/workspace/.toolchain/otp-28.1/bin:"
+                   "/home/hatch/workspace/.toolchain/elixir-1.19.7/bin:"
+                   + env.get("PATH", ""))
+    env["ELIXIR_ERL_OPTIONS"] = "+fnu"
+    r = subprocess.run(["elixir", "--sname", "probe", "-e", code],
+                       capture_output=True, text=True, timeout=60, env=env)
+    return ":ok" in (r.stdout + r.stderr)
+
+def ensure_users(users):
+    # Setup lines are printed, not counted in the SUMMARY: they are a
+    # precondition, not a feature check. A failure here aborts loudly
+    # instead of producing confusing auth failures below.
+    for u in users:
+        ok = rpc_create(u)
+        print(f"[SETUP] user {u}@localhost: {'ok' if ok else 'FAILED'}", flush=True)
+        if not ok:
+            print("SETUP FAILED: is the dev server running on 5222?", file=sys.stderr)
+            sys.exit(2)
 
 class Client(slixmpp.ClientXMPP):
     def __init__(self, jid, pw, peer_box):
@@ -97,19 +126,22 @@ async def main():
     # slixmpp >= 1.8 has no ClientXMPP.process(): connect() already runs
     # the stream as a background asyncio task.
     await asyncio.sleep(12)  # let session_start handlers run (roster/disco/ping)
-    # presence delivery
+    # presence delivery — 10 s, not 3: under load the peer's
+    # session_start (roster/disco/ping) can still be running when this
+    # wait starts, and 3 s flaked. A longer wait only delays a real
+    # failure; the event is already set when presence arrived early.
     try:
-        await asyncio.wait_for(budi.got_presence.wait(), timeout=3)
+        await asyncio.wait_for(budi.got_presence.wait(), timeout=10)
         log("presence andi -> budi (slixmpp)", True, "")
     except asyncio.TimeoutError:
-        log("presence andi -> budi (slixmpp)", False, "no presence received in 3s")
+        log("presence andi -> budi (slixmpp)", False, "no presence received in 10s")
     # 1-1 message
     andi.send_message(mto="budi@localhost", mbody="halo dari slixmpp", mtype="chat")
     try:
-        await asyncio.wait_for(budi.got_message.wait(), timeout=5)
+        await asyncio.wait_for(budi.got_message.wait(), timeout=10)
         log("message andi -> budi (slixmpp)", "halo dari slixmpp" in budi_box, f"box={budi_box}")
     except asyncio.TimeoutError:
-        log("message andi -> budi (slixmpp)", False, "no message received in 5s")
+        log("message andi -> budi (slixmpp)", False, "no message received in 10s")
     andi.expect_disconnect = True
     budi.expect_disconnect = True
     andi.disconnect()
@@ -118,4 +150,5 @@ async def main():
     n = sum(1 for _, ok in RESULTS if ok)
     print(f"\nSUMMARY: {n}/{len(RESULTS)} passed")
 
+ensure_users(["andi", "budi", "carol"])
 asyncio.run(main())

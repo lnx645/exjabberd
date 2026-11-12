@@ -81,6 +81,27 @@ listen:
 
 s2s_use_starttls: optional
 
+## Auth backend (Fase 8) — which store holds the accounts.
+## `mnesia` (default) keeps the current behaviour: SCRAM-SHA-256
+## verifier data in the Mnesia `:passwd` table. `sqlite` uses the
+## SQLite file below instead (same verifier format, so accounts
+## move between backends with `mix exjabberd.auth.migrate` and keep
+## working — no password reset). Other ejabberd names (`sql`,
+## `ldap`, `anonymous`, `jwt`, `external`, `oauth`, `pam`) are
+## recognised but only the stubs from before exist for them, except
+## `anonymous` which works as before; an unknown value warns and
+## falls back to `mnesia`.
+auth_method: mnesia
+# auth_method: sqlite
+
+## SQLite auth database (only used when `auth_method: sqlite`).
+## The file holds SCRAM verifier data only, never cleartext
+## passwords, so there are no credentials to configure here. The
+## `EXJABBERD_AUTH_SQLITE_PATH` environment variable wins over
+## this value when set.
+auth_sqlite:
+  path: "priv/auth.sqlite3"
+
 # Dialback secret (XEP-0220): shared by every server in this
 # administrative domain; keys are HMAC-SHA256 over it. When absent,
 # the server generates a random ephemeral secret at boot (logged as
@@ -96,6 +117,30 @@ s2s_use_starttls: optional
 #   example.com:
 #     host: 127.0.0.1
 #     port: 5269
+
+## Clustering (Fase 7) — distributed Erlang, multi-node, same domain.
+## `nodes` lists the OTHER nodes of this cluster by Erlang node name
+## (short names: `name@hostname`, same host or LAN); this node
+## connects to them at boot and retries every 5 s, so a node that
+## returns rejoins on its own. `cookie` is the shared Erlang cookie
+## — it MUST be identical on every node (or set the
+## `EXJABBERD_ERLANG_COOKIE` env var to the same value, which wins
+## over this setting). When no cookie is configured anywhere, the
+## node's default cookie (~/.erlang.cookie) stays in effect — that
+## keeps :rpc tooling working, and Erlang generates that file
+## itself when it does not exist yet. A cluster whose nodes do not
+## share one cookie cannot form, so set it explicitly in production.
+## A node that should SHARE the Mnesia tables (accounts, roster,
+## offline, MAM, PubSub) must ALSO boot once with
+## `EXJABBERD_CLUSTER_JOIN=<an existing node>` — it then copies the
+## cluster schema from that peer. Merely listing a peer in `nodes`
+## is enough for session/message routing, but Mnesia stays unshared
+## when both sides already have independent schemas (see README).
+## NEVER commit a production cookie to version control.
+cluster:
+  enabled: true
+  nodes: []
+  # cookie: "change-me-to-a-long-random-secret"
 
 ## HTTP stack (admin web, BOSH, WebSocket, file upload, REST API).
 ## `api_token` is the REST API Bearer token; `upload_secret` signs

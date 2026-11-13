@@ -120,6 +120,41 @@ defmodule Exjabberd.Http.Config do
     end
   end
 
+  @doc """
+  Per-account upload quota in bytes: the total size of one user's
+  live (non-expired) upload slots may not exceed this. Read from
+  `http.upload_quota`; default 100 MB.
+  """
+  @spec upload_quota_bytes() :: pos_integer()
+  def upload_quota_bytes do
+    case get("upload_quota") do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 100 * 1024 * 1024
+    end
+  end
+
+  @doc """
+  ACME http-01 challenge response for a token, from the
+  `http.acme_challenges` map (token => key authorization) in
+  exjabberd.yml, or `nil`. This is the serving half of ACME; the
+  certificate issuance/renewal itself is left to an external ACME
+  client (the issued cert lands in the cert directory like any
+  other).
+  """
+  @spec acme_challenge(binary()) :: binary() | nil
+  def acme_challenge(token) do
+    case get("acme_challenges") do
+      map when is_map(map) ->
+        case Map.get(map, token) do
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   @doc "Configured HTTP listener port (from the `exjabberd_http` listen entry, default 5280)."
   @spec http_port() :: pos_integer()
   def http_port do

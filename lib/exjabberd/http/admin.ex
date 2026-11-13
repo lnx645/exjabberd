@@ -18,7 +18,10 @@ defmodule Exjabberd.Http.Admin do
     modules, version (all live numbers from server state);
   * users — list, create, delete, reset password (a deleted user's
     sessions are closed immediately);
-  * sessions — every online session (bare JID + resource).
+  * sessions — every online session (bare JID + resource);
+  * rooms — MUC rooms with occupant counts, and room destruction;
+  * pubsub — service nodes with type/owner/subscriber counts, and
+    node deletion.
 
   Every link and form works; there are no placeholder pages.
   """
@@ -39,6 +42,8 @@ defmodule Exjabberd.Http.Admin do
       :dashboard -> with_admin(req, &dashboard_page/2)
       :users -> with_admin(req, &users_page/2)
       :sessions -> with_admin(req, &sessions_page/2)
+      :rooms -> with_admin(req, &rooms_page/2)
+      :pubsub -> with_admin(req, &pubsub_page/2)
       :unknown -> {404, [], "Not found"}
     end
     |> to_response()
@@ -50,6 +55,8 @@ defmodule Exjabberd.Http.Admin do
       :users_create -> with_admin_post(req, &do_create_user/2)
       :users_delete -> with_admin_post(req, &do_delete_user/2)
       :users_reset -> with_admin_post(req, &do_reset_password/2)
+      :rooms_destroy -> with_admin_post(req, &do_destroy_room/2)
+      :pubsub_delete -> with_admin_post(req, &do_delete_node/2)
       _ -> {404, [], "Not found"} |> to_response()
     end
   end
@@ -168,6 +175,10 @@ defmodule Exjabberd.Http.Admin do
   defp route("/admin/users/delete"), do: :users_delete
   defp route("/admin/users/reset"), do: :users_reset
   defp route("/admin/sessions"), do: :sessions
+  defp route("/admin/rooms"), do: :rooms
+  defp route("/admin/rooms/destroy"), do: :rooms_destroy
+  defp route("/admin/pubsub"), do: :pubsub
+  defp route("/admin/pubsub/delete"), do: :pubsub_delete
   defp route(_), do: :unknown
 
   defp with_admin(req, page_fn) do
@@ -318,7 +329,7 @@ defmodule Exjabberd.Http.Admin do
     .msg{background:#14532d;border:1px solid #22c55e;padding:10px;border-radius:6px;margin-bottom:16px}
     .stat{font-size:28px;font-weight:700}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
     .err{color:#fca5a5}</style></head><body>
-    <nav><b>exjabberd</b><a href="/admin">Dashboard</a><a href="/admin/users">Users</a><a href="/admin/sessions">Sessions</a>
+    <nav><b>exjabberd</b><a href="/admin">Dashboard</a><a href="/admin/users">Users</a><a href="/admin/sessions">Sessions</a><a href="/admin/rooms">Rooms</a><a href="/admin/pubsub">PubSub</a>
     <span>#{esc(user)} · <a href="/admin/logout">Logout</a></span></nav>
     <main>#{inner}</main></body></html>
     """
@@ -439,6 +450,100 @@ defmodule Exjabberd.Http.Admin do
       end
 
     layout("Sessions", user, "<h1>Online sessions (#{length(sessions)})</h1>#{body}")
+  end
+
+  defp rooms_page(user, req) do
+    host = List.first(Exjabberd.Config.hosts()) || "localhost"
+    msg = flash(req)
+    rooms = Exjabberd.Mod.Muc.list_rooms(host)
+
+    rows =
+      Enum.map_join(rooms, "", fn room ->
+        occupants =
+          case Exjabberd.Mod.Muc.occupants(host, room) do
+            {:ok, %{occupants: occ}} -> map_size(occ)
+            _ -> 0
+          end
+
+        """
+        <tr><td>#{esc(room)}</td><td>#{occupants}</td>
+        <td><form method="post" action="/admin/rooms/destroy" style="display:inline">
+        <input type="hidden" name="room" value="#{esc(room)}"/>
+        <button class="danger" type="submit">Destroy</button></form></td></tr>
+        """
+      end)
+
+    body =
+      if rooms == [] do
+        "<p>No MUC rooms.</p>"
+      else
+        "<div class=\"card\"><table><tr><th>Room</th><th>Occupants</th><th></th></tr>#{rows}</table></div>"
+      end
+
+    layout("Rooms", user, "#{msg}<h1>MUC rooms (#{length(rooms)})</h1>#{body}")
+  end
+
+  defp do_destroy_room(_admin, req) do
+    params = form_params(req)
+    host = List.first(Exjabberd.Config.hosts()) || "localhost"
+    room = Map.get(params, "room", "")
+
+    case Exjabberd.Mod.Muc.destroy_room(host, room) do
+      :ok ->
+        {302, [{"location", "/admin/rooms?msg=#{URI.encode_www_form("Room #{room} destroyed.")}"}], ""}
+
+      {:error, :not_found} ->
+        {302, [{"location", "/admin/rooms?msg=#{URI.encode_www_form("Room not found.")}"}], ""}
+    end
+  end
+
+  defp pubsub_page(user, req) do
+    host = List.first(Exjabberd.Config.hosts()) || "localhost"
+    msg = flash(req)
+    nodes = Exjabberd.Mod.PubSub.list_service_nodes(host)
+
+    rows =
+      Enum.map_join(nodes, "", fn node ->
+        meta = Exjabberd.Mod.PubSub.get_node(host, node) || %{}
+        subs = length(Exjabberd.Mod.PubSub.get_subscribers(host, node))
+
+        """
+        <tr><td>#{esc(node)}</td><td>#{esc(meta[:type] || "leaf")}</td><td>#{esc(meta[:owner] || "")}</td><td>#{subs}</td>
+        <td><form method="post" action="/admin/pubsub/delete" style="display:inline">
+        <input type="hidden" name="node" value="#{esc(node)}"/>
+        <button class="danger" type="submit">Delete</button></form></td></tr>
+        """
+      end)
+
+    body =
+      if nodes == [] do
+        "<p>No PubSub service nodes.</p>"
+      else
+        "<div class=\"card\"><table><tr><th>Node</th><th>Type</th><th>Owner</th><th>Subscribers</th><th></th></tr>#{rows}</table></div>"
+      end
+
+    layout("PubSub", user, "#{msg}<h1>PubSub nodes (#{length(nodes)})</h1>#{body}")
+  end
+
+  defp do_delete_node(_admin, req) do
+    params = form_params(req)
+    host = List.first(Exjabberd.Config.hosts()) || "localhost"
+    node = Map.get(params, "node", "")
+
+    case Exjabberd.Mod.PubSub.delete_node(host, node) do
+      :ok ->
+        {302, [{"location", "/admin/pubsub?msg=#{URI.encode_www_form("Node #{node} deleted.")}"}], ""}
+
+      {:error, :not_found} ->
+        {302, [{"location", "/admin/pubsub?msg=#{URI.encode_www_form("Node not found.")}"}], ""}
+    end
+  end
+
+  defp flash(req) do
+    case Map.get(req.query || %{}, "msg") do
+      nil -> ""
+      text -> "<div class=\"msg\">#{esc(text)}</div>"
+    end
   end
 
   defp uptime_human(seconds) do

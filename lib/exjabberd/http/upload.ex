@@ -32,9 +32,15 @@ defmodule Exjabberd.Http.Upload do
 
   @table :exjabberd_upload_slots
 
-  @doc "Request a slot. Returns `{:ok, %{put: url, get: url, slot_id: id, expires_at: ts}}`."
+  @doc """
+  Request a slot. Returns `{:ok, %{put: url, get: url, slot_id: id, expires_at: ts}}`.
+
+  Refuses with `:quota_exceeded` when the user's live slots plus
+  this request would exceed `http.upload_quota` (per-account quota,
+  like ejabberd's `mod_http_upload` quota deployments).
+  """
   @spec request_slot(binary(), binary(), binary(), non_neg_integer(), binary() | nil) ::
-          {:ok, map()} | {:error, :too_large | :bad_request}
+          {:ok, map()} | {:error, :too_large | :bad_request | :quota_exceeded}
   def request_slot(host, user, filename, size, content_type) do
     ensure_table()
 
@@ -45,6 +51,9 @@ defmodule Exjabberd.Http.Upload do
 
       not is_integer(size) or size < 0 or size > Config.upload_max_size() ->
         {:error, :too_large}
+
+      quota_exceeded?(host, user, size) ->
+        {:error, :quota_exceeded}
 
       true ->
         slot_id = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
@@ -75,6 +84,21 @@ defmodule Exjabberd.Http.Upload do
              "#{base}/upload/#{slot_id}/#{encoded_name}?token=#{sign("get", slot_id, filename, expires_at)}&exp=#{expires_at}"
          }}
     end
+  end
+
+  # Sum of the sizes of the user's non-expired slots (reserved at
+  # request time, whether or not the PUT happened yet).
+  defp quota_exceeded?(host, user, new_size) do
+    now = System.system_time(:second)
+
+    used =
+      :ets.tab2list(@table)
+      |> Enum.filter(fn {_id, record} ->
+        record.host == host and record.user == user and record.expires_at > now
+      end)
+      |> Enum.reduce(0, fn {_id, record}, acc -> acc + record.size end)
+
+    used + new_size > Config.upload_quota_bytes()
   end
 
   @doc "Handle `PUT /upload/:slot/:filename?token=…&exp=…` with the raw body."

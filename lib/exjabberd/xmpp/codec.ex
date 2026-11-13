@@ -88,7 +88,7 @@ defmodule Exjabberd.Xmpp.Codec do
     # (stream management, CSI, carbons). The hook fold receives the
     # options as ONE argument, so a handler is called as
     # `feature(acc, host, opts)`.
-    base = builtin_features(opts)
+    base = builtin_features(host, opts)
     Exjabberd.Hooks.run_fold(:c2s_stream_features, host, base, [opts])
   end
 
@@ -96,12 +96,18 @@ defmodule Exjabberd.Xmpp.Codec do
   # stage. Only features that are really implemented are advertised:
   # STARTTLS (when not on TLS yet), SASL PLAIN + SCRAM-SHA-256, and
   # resource binding after auth.
-  defp builtin_features(opts) do
+  defp builtin_features(host, opts) do
     authenticated = Keyword.get(opts, :authenticated, false)
     tls = Keyword.get(opts, :tls, false)
 
+    # `starttls_required` (Fase 11): on a plaintext stream the SASL
+    # mechanisms are withheld and STARTTLS is marked <required/>,
+    # like ejabberd — authentication only happens after the upgrade.
+    tls_required =
+      not authenticated and not tls and Exjabberd.Config.starttls_required?(host)
+
     sasl =
-      if authenticated do
+      if authenticated or tls_required do
         []
       else
         [
@@ -127,11 +133,18 @@ defmodule Exjabberd.Xmpp.Codec do
       if authenticated or tls do
         []
       else
+        children =
+          if tls_required do
+            [%{name: "required", attrs: %{}, children: []}]
+          else
+            []
+          end
+
         [
           %{
             name: "starttls",
             attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-tls"},
-            children: []
+            children: children
           }
         ]
       end
@@ -389,6 +402,13 @@ defmodule Exjabberd.Xmpp.Codec do
       "jid" => to_string(jid),
       "subscription" => to_string(Map.get(item, :subscription, :none))
     }
+
+    attrs =
+      case Map.get(item, :ask) do
+        nil -> attrs
+        :none -> attrs
+        ask -> Map.put(attrs, "ask", to_string(ask))
+      end
 
     attrs =
       case Map.get(item, :name) do

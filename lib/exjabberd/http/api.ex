@@ -146,6 +146,62 @@ defmodule Exjabberd.Http.Api do
     end
   end
 
+  defp dispatch(%{method: "GET", path: "/api/rooms"} = req) do
+    host = host_param(req)
+
+    rooms =
+      Enum.map(Exjabberd.Mod.Muc.list_rooms(host), fn room ->
+        occupants =
+          case Exjabberd.Mod.Muc.occupants(host, room) do
+            {:ok, %{occupants: occ}} -> map_size(occ)
+            _ -> 0
+          end
+
+        %{jid: room, occupants: occupants}
+      end)
+
+    json(200, %{rooms: rooms, count: length(rooms)})
+  end
+
+  defp dispatch(%{method: "DELETE", path: "/api/rooms/" <> name} = req) do
+    host = host_param(req)
+    name = URI.decode(name)
+    room = if String.contains?(name, "@"), do: name, else: "#{name}@conference.#{host}"
+
+    case Exjabberd.Mod.Muc.destroy_room(host, room) do
+      :ok -> json(200, %{room: room, destroyed: true})
+      {:error, :not_found} -> json(404, %{error: "room not found"})
+    end
+  end
+
+  defp dispatch(%{method: "GET", path: "/api/nodes"} = req) do
+    host = host_param(req)
+
+    nodes =
+      Enum.map(Exjabberd.Mod.PubSub.list_service_nodes(host), fn node ->
+        meta = Exjabberd.Mod.PubSub.get_node(host, node) || %{}
+
+        %{
+          node: node,
+          type: meta[:type] || "leaf",
+          owner: meta[:owner],
+          subscribers: length(Exjabberd.Mod.PubSub.get_subscribers(host, node))
+        }
+      end)
+
+    json(200, %{nodes: nodes, count: length(nodes)})
+  end
+
+  defp dispatch(%{method: "DELETE", path: "/api/nodes/" <> node} = req) do
+    host = host_param(req)
+    node = URI.decode(node)
+
+    case Exjabberd.Mod.PubSub.delete_node(host, node) do
+      :ok -> json(200, %{node: node, deleted: true})
+      {:error, :not_found} -> json(404, %{error: "node not found"})
+    end
+  end
+
   defp dispatch(_req), do: json(404, %{error: "not found"})
 
   defp host_param(req) do

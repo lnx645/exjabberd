@@ -18,10 +18,17 @@ defmodule Exjabberd.Mod.PubSub do
     owner namespace (`<configure/>`).
   * Subscriptions: subscribe / unsubscribe, with `subid`s; access
     models `open` (anyone), `whitelist` (affiliated JIDs only),
-    `authorize` (subscription recorded as `pending` — approval by
-    the owner is not implemented yet, see README),
+    `authorize` (subscription recorded as `pending`; the owner gets
+    a `pubsub#subscribe_authorization` data-form message and their
+    allow/deny reply settles the subscription — XEP-0060 §6.5),
     `presence` / `roster` (treated as `open` for local users —
     documented simplification).
+  * Collection nodes (XEP-0060 §15): nodes of type `collection`
+    group leaf nodes — a leaf lists its collections in the
+    `pubsub#collection` config field, disco#items on a collection
+    returns its children, and item retrieval on a collection
+    aggregates its children's items. Collections hold no items
+    themselves (publishing to one is `forbidden`).
   * Publishing: `publish` (item id or server-generated), `retract`,
     `purge` (owner); publish models `open`, `publishers`
     (owner/publisher affiliation), `subscribers`.
@@ -41,9 +48,6 @@ defmodule Exjabberd.Mod.PubSub do
   * `access_model: "open"`, `publish_model: "publishers"`,
     `max_items: 10`, `persist_items: true`,
     `deliver_payloads: true`, node type `leaf`.
-
-  Collections are not implemented: `create` with a collection type
-  is rejected with `bad-request` (documented in the README).
   """
 
   use Exjabberd.Mod.GenMod
@@ -57,6 +61,7 @@ defmodule Exjabberd.Mod.PubSub do
   @disco_info_ns "http://jabber.org/protocol/disco#info"
   @disco_items_ns "http://jabber.org/protocol/disco#items"
   @data_ns "jabber:x:data"
+  @authz_form_type "http://jabber.org/protocol/pubsub#subscribe_authorization"
 
   @nodes_table :pubsub_nodes
   @items_table :pubsub_items
@@ -90,6 +95,9 @@ defmodule Exjabberd.Mod.PubSub do
     Exjabberd.Iq.register(host, @owner_ns, __MODULE__, :handle_owner_iq)
     Exjabberd.Hooks.add(:disco_info, host, __MODULE__, :disco_info, 50)
     Exjabberd.Hooks.add(:pubsub_create_node, host, __MODULE__, :on_create_node, 50)
+    # PEP subscription-authorization replies arrive as messages to
+    # the owner's own JID; intercept them before MAM archives them.
+    Exjabberd.Hooks.add(:user_receive_packet, host, __MODULE__, :on_receive_message, 40)
     :ok
   end
 
@@ -99,6 +107,7 @@ defmodule Exjabberd.Mod.PubSub do
     Exjabberd.Iq.unregister(host, @owner_ns, :both)
     Exjabberd.Hooks.delete(:disco_info, host, __MODULE__, :disco_info)
     Exjabberd.Hooks.delete(:pubsub_create_node, host, __MODULE__, :on_create_node)
+    Exjabberd.Hooks.delete(:user_receive_packet, host, __MODULE__, :on_receive_message)
     :ok
   end
 
@@ -261,15 +270,13 @@ defmodule Exjabberd.Mod.PubSub do
     ensure_tables()
 
     cond do
-      Keyword.get(opts, :type, "leaf") == "collection" ->
-        {:error, :collection_not_supported}
-
       get_node(host, node) != nil ->
         {:error, :conflict}
 
       true ->
         meta = %{
           type: Keyword.get(opts, :type, "leaf"),
+          collection: Keyword.get(opts, :collection, []),
           access_model:
             to_string(Keyword.get(opts, :access_model, default_opt(host, :access_model, "open"))),
           publish_model:
@@ -291,6 +298,24 @@ defmodule Exjabberd.Mod.PubSub do
         Exjabberd.Hooks.run(:pubsub_create_node, host, {node, meta})
         :ok
     end
+  end
+
+  @doc """
+  Children of a collection node: the nodes whose `pubsub#collection`
+  configuration lists this node (XEP-0060 §15). Works off the child
+  nodes' stored config, so it stays correct when nodes are created,
+  reconfigured or deleted.
+  """
+  @spec children_of(binary(), binary()) :: [binary()]
+  def children_of(host, collection_node) do
+    ensure_tables()
+
+    all(@nodes_table)
+    |> Enum.filter(fn {{h, _node}, meta} ->
+      h == host and collection_node in (meta[:collection] || [])
+    end)
+    |> Enum.map(fn {{_h, node}, _meta} -> node end)
+    |> Enum.sort()
   end
 
   @doc "Delete node (like `mod_pubsub:delete_node/2`). Notifies subscribers."
@@ -406,6 +431,7 @@ defmodule Exjabberd.Mod.PubSub do
           meta.access_model == "authorize" ->
             subid = Keyword.get(opts, :subid, random_id())
             put(@subs_table, {host, node, jid}, %{jid: jid, subid: subid, state: :pending})
+            notify_authorization_request(host, meta, jid, subid, opts)
             {:ok, :pending, subid}
 
           true ->
@@ -449,6 +475,171 @@ defmodule Exjabberd.Mod.PubSub do
     |> Enum.sort()
   end
 
+  # --- subscription authorization (XEP-0060 §6.5) ---
+
+  # When a subscription lands as `pending`, the node owner receives
+  # a message carrying this data form; their submit reply (allow =
+  # 1/0) settles it. See handle_authorization_reply/3.
+  defp notify_authorization_request(host, meta, subscriber_jid, subid, opts) do
+    owner = meta.owner
+    wire_node = Keyword.get(opts, :notify_node, nil)
+    from = Keyword.get(opts, :from, service_jid(host))
+
+    if is_binary(owner) and owner != "" do
+      node_name = wire_node || "?"
+      fields = [
+        {"FORM_TYPE", "hidden", @authz_form_type},
+        {"pubsub#node", "text-single", node_name},
+        {"pubsub#subscriber_jid", "jid-single", subscriber_jid},
+        {"pubsub#subid", "text-single", subid},
+        {"pubsub#allow", "boolean", "0"}
+      ]
+
+      stanza =
+        Stanza.new(:message,
+          type: "normal",
+          from: from,
+          to: owner,
+          payload: [
+            %{
+              name: "body",
+              attrs: %{},
+              children: [
+                "Subscription request from #{subscriber_jid} for node #{node_name}: " <>
+                  "reply with this form (pubsub#allow = 1 to approve)."
+              ]
+            },
+            %{
+              name: "x",
+              attrs: %{"xmlns" => @data_ns, "type" => "form"},
+              children:
+                Enum.map(fields, fn {var, type, value} ->
+                  %{
+                    name: "field",
+                    attrs: %{"var" => var, "type" => type},
+                    children: [%{name: "value", attrs: %{}, children: [value]}]
+                  }
+                end)
+            }
+          ]
+        )
+
+      Exjabberd.Router.route(stanza)
+    end
+
+    :ok
+  end
+
+  @doc "True when a message stanza is a subscription-authorization submit form."
+  @spec authorization_reply?(map()) :: boolean()
+  def authorization_reply?(%{name: :message, payload: payload}) when is_list(payload) do
+    case Stanza.child(payload, "x") do
+      %{attrs: %{"type" => "submit"}} = x -> form_type(x) == @authz_form_type
+      _ -> false
+    end
+  end
+
+  def authorization_reply?(_stanza), do: false
+
+  defp form_type(x_el) do
+    x_el.children
+    |> Enum.find_value(fn
+      %{name: "field", attrs: %{"var" => "FORM_TYPE"}, children: children} ->
+        Stanza.child_text(children, "value")
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp form_values(x_el) do
+    Map.new(Enum.filter(x_el.children, &match?(%{name: "field"}, &1)), fn field ->
+      {field.attrs["var"] || "", Stanza.child_text(field.children, "value") || ""}
+    end)
+  end
+
+  @doc """
+  Settle a pending subscription from the owner's authorization
+  reply (a message with the submit form). `pep` is the PEP owner's
+  bare JID for replies addressed to a user JID, or `nil` for replies
+  addressed to the PubSub service. Only the node owner quoting the
+  right `subid` can settle it; anything else is ignored. The
+  subscriber is notified of the outcome with a pubsub#event
+  subscription notification.
+  """
+  @spec handle_authorization_reply(map(), binary(), binary() | nil) :: :ok
+  def handle_authorization_reply(stanza, host, pep) do
+    ensure_tables()
+    x = Stanza.child(stanza.payload, "x")
+    fields = if x, do: form_values(x), else: %{}
+    node = fields["pubsub#node"]
+    subid = fields["pubsub#subid"]
+    subscriber = fields["pubsub#subscriber_jid"]
+    allow = fields["pubsub#allow"] in ["1", "true"]
+    requester = bare_of(stanza.from)
+
+    with true <- is_binary(node) and node != "",
+         key <- resolve_node(pep, node),
+         meta when not is_nil(meta) <- get_node(host, key),
+         true <- requester == meta.owner,
+         %{state: :pending, subid: ^subid} <- get(@subs_table, {host, key, subscriber}) do
+      from = pep || service_jid(host)
+
+      if allow do
+        put(@subs_table, {host, key, subscriber}, %{jid: subscriber, subid: subid, state: :subscribed})
+
+        notify(
+          subscriber,
+          host,
+          %{
+            name: "subscription",
+            attrs: %{
+              "node" => node,
+              "jid" => subscriber,
+              "subscription" => "subscribed",
+              "subid" => subid
+            },
+            children: []
+          },
+          from: from
+        )
+      else
+        delete(@subs_table, {host, key, subscriber})
+
+        notify(
+          subscriber,
+          host,
+          %{
+            name: "subscription",
+            attrs: %{"node" => node, "jid" => subscriber, "subscription" => "none"},
+            children: []
+          },
+          from: from
+        )
+      end
+    end
+
+    :ok
+  end
+
+  @doc false
+  # `:user_receive_packet` fold (priority 40, before MAM at 50):
+  # PEP authorization replies are consumed, everything else passes.
+  def on_receive_message(%{name: :message} = stanza, host, jid) do
+    if authorization_reply?(stanza) do
+      handle_authorization_reply(stanza, host, Jid.bare(jid))
+      :intercepted
+    else
+      stanza
+    end
+  end
+
+  def on_receive_message(stanza, _host, _jid), do: stanza
+
+  defp bare_of(%Jid{} = jid), do: Jid.bare(jid)
+  defp bare_of(bin) when is_binary(bin), do: Jid.bare(bin)
+  defp bare_of(_), do: ""
+
   # --- items ---
 
   @doc """
@@ -471,37 +662,44 @@ defmodule Exjabberd.Mod.PubSub do
         {:error, :not_found}
 
       meta ->
-        if allowed_to_publish?(host, node, meta, publisher) do
-          item_id = item_id || random_id()
+        cond do
+          # Collections group nodes; they hold no items themselves.
+          meta.type == "collection" ->
+            {:error, :forbidden}
 
-          item = %{
-            payload: payload,
-            publisher: publisher,
-            ts: System.system_time(:millisecond),
-            id: item_id
-          }
+          allowed_to_publish?(host, node, meta, publisher) ->
+            item_id = item_id || random_id()
 
-          if meta.persist_items do
-            put(@items_table, {host, node, item_id}, item)
-            enforce_max_items(host, node, meta)
-          end
+            item = %{
+              payload: payload,
+              publisher: publisher,
+              ts: System.system_time(:millisecond),
+              id: item_id
+            }
 
-          if meta.deliver_payloads do
-            Enum.each(get_subscribers(host, node), fn sub_jid ->
-              notify_items(sub_jid, host, notify_node, [item_element(item)], from: from)
-            end)
-          end
+            if meta.persist_items do
+              put(@items_table, {host, node, item_id}, item)
+              enforce_max_items(host, node, meta)
+            end
 
-          # MQTT bridge (Fase 6): forward the item to MQTT subscribers
-          # of the node name as topic — unless this publish itself came
-          # from the bridge, in which case echoing it back would loop.
-          unless Keyword.get(opts, :from_bridge, false) do
-            Exjabberd.Hooks.run(:pubsub_publish_item, host, {node, item_id, payload})
-          end
+            if meta.deliver_payloads do
+              Enum.each(get_subscribers(host, node), fn sub_jid ->
+                notify_items(sub_jid, host, notify_node, [item_element(item)], from: from)
+              end)
+            end
 
-          :ok
-        else
-          {:error, :forbidden}
+            # MQTT bridge (Fase 6): forward the item to MQTT
+            # subscribers of the node name as topic — unless this
+            # publish itself came from the bridge, in which case
+            # echoing it back would loop.
+            unless Keyword.get(opts, :from_bridge, false) do
+              Exjabberd.Hooks.run(:pubsub_publish_item, host, {node, item_id, payload})
+            end
+
+            :ok
+
+          true ->
+            {:error, :forbidden}
         end
     end
   end
@@ -564,23 +762,38 @@ defmodule Exjabberd.Mod.PubSub do
     end
   end
 
-  @doc "Get items for node, oldest first."
+  @doc "Get items for node, oldest first. For a collection node, the children's items are aggregated (XEP-0060 §15)."
   @spec get_items(binary(), binary(), keyword()) :: {:ok, [map()], map()} | {:error, term()}
   def get_items(host, node, opts \\ []) do
     ensure_tables()
     limit = Keyword.get(opts, :max_items, Keyword.get(opts, :limit, @default_max_items))
 
-    if get_node(host, node) == nil do
-      {:error, :not_found}
-    else
-      items =
-        all(@items_table)
-        |> Enum.filter(fn {{h, n, _id}, _item} -> h == host and n == node end)
-        |> Enum.map(fn {{_h, _n, id}, item} -> Map.put(item, :id, id) end)
-        |> Enum.sort_by(& &1.ts)
-        |> Enum.take(limit)
+    case get_node(host, node) do
+      nil ->
+        {:error, :not_found}
 
-      {:ok, items, %{count: length(items)}}
+      %{type: "collection"} ->
+        items =
+          children_of(host, node)
+          |> Enum.flat_map(fn child ->
+            all(@items_table)
+            |> Enum.filter(fn {{h, n, _id}, _item} -> h == host and n == child end)
+            |> Enum.map(fn {{_h, _n, id}, item} -> Map.put(item, :id, id) end)
+          end)
+          |> Enum.sort_by(& &1.ts)
+          |> Enum.take(limit)
+
+        {:ok, items, %{count: length(items)}}
+
+      _meta ->
+        items =
+          all(@items_table)
+          |> Enum.filter(fn {{h, n, _id}, _item} -> h == host and n == node end)
+          |> Enum.map(fn {{_h, _n, id}, item} -> Map.put(item, :id, id) end)
+          |> Enum.sort_by(& &1.ts)
+          |> Enum.take(limit)
+
+        {:ok, items, %{count: length(items)}}
     end
   end
 
@@ -672,9 +885,6 @@ defmodule Exjabberd.Mod.PubSub do
 
           {:error, :conflict} ->
             {:error, :conflict, Exjabberd.Iq.error_iq(iq, "conflict")}
-
-          {:error, :collection_not_supported} ->
-            {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
         end
     end
   end
@@ -688,7 +898,10 @@ defmodule Exjabberd.Mod.PubSub do
         {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
 
       true ->
-        case subscribe(host, resolve_node(pep, node), jid) do
+        case subscribe(host, resolve_node(pep, node), jid,
+               from: pep || service_jid(host),
+               notify_node: node
+             ) do
           {:ok, state, subid} ->
             sub = %{
               name: "subscription",
@@ -1093,9 +1306,17 @@ defmodule Exjabberd.Mod.PubSub do
       Enum.each(el.children, fn
         %{name: "subscription", attrs: %{"jid" => jid, "subscription" => state}} ->
           case state do
-            "none" -> unsubscribe(host, key, jid)
-            "subscribed" -> subscribe(host, key, jid)
-            _ -> :ok
+            # Owner decisions are final: write the state directly
+            # instead of re-running subscribe (which would re-pend
+            # the JID on authorize nodes and re-notify the owner).
+            "none" ->
+              unsubscribe(host, key, jid)
+
+            "subscribed" ->
+              put(@subs_table, {host, key, jid}, %{jid: jid, subid: random_id(), state: :subscribed})
+
+            _ ->
+              :ok
           end
 
         _ ->
@@ -1141,7 +1362,27 @@ defmodule Exjabberd.Mod.PubSub do
         do: configure_el,
         else: Stanza.child(configure_el.children, "x")
 
-    if is_nil(form), do: [], else: form_fields(form)
+    if is_nil(form), do: [], else: form_fields(form) ++ collection_opt(form)
+  end
+
+  # `pubsub#collection` is multi-valued (a node may sit in several
+  # collections); form_fields/1 only reads first values, so extract
+  # every <value/> of that field here.
+  defp collection_opt(form) do
+    values =
+      form.children
+      |> Enum.filter(fn
+        %{name: "field", attrs: %{"var" => "pubsub#collection"}} -> true
+        _ -> false
+      end)
+      |> Enum.flat_map(fn field ->
+        field.children
+        |> Enum.filter(&match?(%{name: "value"}, &1))
+        |> Enum.map(&Stanza.text_of/1)
+        |> Enum.reject(&(&1 in [nil, ""]))
+      end)
+
+    if values == [], do: [], else: [collection: values]
   end
 
   defp form_fields(form) do
@@ -1170,6 +1411,9 @@ defmodule Exjabberd.Mod.PubSub do
           {"pubsub#title", v} when is_binary(v) ->
             [title: v]
 
+          {"pubsub#type", v} when is_binary(v) ->
+            [type: v]
+
           {"pubsub#description", v} when is_binary(v) ->
             [description: v]
 
@@ -1185,6 +1429,7 @@ defmodule Exjabberd.Mod.PubSub do
   defp configure_element(node, meta) do
     fields = [
       {"FORM_TYPE", "hidden", @pubsub_ns <> "#node_config"},
+      {"pubsub#type", "list-single", meta.type || "leaf"},
       {"pubsub#access_model", "list-single", meta.access_model},
       {"pubsub#publish_model", "list-single", meta.publish_model},
       {"pubsub#max_items", "text-single", to_string(meta.max_items)},
@@ -1193,6 +1438,24 @@ defmodule Exjabberd.Mod.PubSub do
       {"pubsub#title", "text-single", meta.title || ""},
       {"pubsub#description", "text-single", meta.description || ""}
     ]
+
+    collection_field =
+      case meta[:collection] || [] do
+        [] ->
+          []
+
+        parents ->
+          [
+            %{
+              name: "field",
+              attrs: %{"var" => "pubsub#collection", "type" => "text-multi"},
+              children:
+                Enum.map(parents, fn parent ->
+                  %{name: "value", attrs: %{}, children: [parent]}
+                end)
+            }
+          ]
+      end
 
     %{
       name: "configure",
@@ -1208,7 +1471,7 @@ defmodule Exjabberd.Mod.PubSub do
                 attrs: %{"var" => var, "type" => type},
                 children: [%{name: "value", attrs: %{}, children: [value]}]
               }
-            end)
+            end) ++ collection_field
         }
       ]
     }
@@ -1587,11 +1850,25 @@ defmodule Exjabberd.Mod.Disco do
     node = query_node(iq)
 
     {features, identities} =
-      case iq.to do
+      if node == "http://jabber.org/protocol/commands" do
+        # XEP-0050: disco#info on the commands node.
+        {["http://jabber.org/protocol/commands", "http://jabber.org/protocol/disco#info"],
+         [%{category: "automation", type: "command-list", name: "Ad-Hoc Commands"}]}
+      else
+        case iq.to do
         %Exjabberd.Xmpp.Jid{domain: "conference." <> _} ->
           # The MUC service answers with its own identity + features.
           {["http://jabber.org/protocol/disco#info", "http://jabber.org/protocol/muc"],
            [%{category: "conference", type: "text", name: "exjabberd MUC"}]}
+
+        %Exjabberd.Xmpp.Jid{local: local, domain: "mix." <> _} ->
+          # The MIX service or one of its channels (XEP-0369).
+          channel =
+            if is_binary(local) and local != "",
+              do: Exjabberd.Xmpp.Jid.bare(iq.to),
+              else: nil
+
+          Exjabberd.Mod.Mix.disco_info(host, channel)
 
         %Exjabberd.Xmpp.Jid{domain: "pubsub." <> _} when not is_nil(node) ->
           # Disco#info on one node of the PubSub service.
@@ -1625,6 +1902,7 @@ defmodule Exjabberd.Mod.Disco do
 
         _ ->
           {acc.features, acc.identities}
+        end
       end
 
     {:ok,
@@ -1649,14 +1927,44 @@ defmodule Exjabberd.Mod.Disco do
     acc = Exjabberd.Hooks.run_fold(:disco_items, host, %{items: []}, [])
 
     items =
-      case iq.to do
+      case query_node(iq) do
+        "http://jabber.org/protocol/commands" ->
+          # XEP-0050: the commands node lists the registered commands.
+          Enum.map(Exjabberd.Mod.Adhoc.list_commands(host), fn {node, name} ->
+            %{jid: host, node: node, name: name}
+          end)
+
+        _ ->
+          items_for(iq, host, acc)
+      end
+
+    {:ok,
+     %{
+       iq
+       | type: "result",
+         payload: [%{xmlns: "http://jabber.org/protocol/disco#items", items: items}]
+     }}
+  end
+
+  defp items_for(iq, host, acc) do
+    node = query_node(iq)
+
+    case iq.to do
         nil ->
           # The server lists its services.
           acc.items ++
             [
               %{jid: "conference.#{host}", name: "Multi-User Chat"},
-              %{jid: "pubsub.#{host}", name: "Publish-Subscribe"}
+              %{jid: "pubsub.#{host}", name: "Publish-Subscribe"},
+              %{jid: "mix.#{host}", name: "Mediated Information eXchange"}
             ]
+
+        %Exjabberd.Xmpp.Jid{domain: "pubsub." <> _, local: nil} when not is_nil(node) ->
+          # Disco#items on one node: a collection lists its children;
+          # a leaf has no items (XEP-0060 §15).
+          Enum.map(Exjabberd.Mod.PubSub.children_of(host, node), fn child ->
+            %{jid: "pubsub.#{host}", node: child}
+          end)
 
         %Exjabberd.Xmpp.Jid{domain: "pubsub." <> _, local: nil} ->
           # The PubSub service lists its nodes (PEP nodes belong to
@@ -1669,6 +1977,21 @@ defmodule Exjabberd.Mod.Disco do
           # The MUC service lists its rooms.
           Enum.map(Exjabberd.Mod.Muc.list_rooms(host), fn room ->
             %{jid: room}
+          end)
+
+        %Exjabberd.Xmpp.Jid{domain: "mix." <> _, local: nil} ->
+          # The MIX service lists its channels (XEP-0369).
+          Enum.map(Exjabberd.Mod.Mix.list_channels(host), fn channel ->
+            %{jid: channel}
+          end)
+
+        %Exjabberd.Xmpp.Jid{local: local, domain: "mix." <> _}
+        when is_binary(local) and local != "" ->
+          # A MIX channel lists its nodes.
+          channel = Exjabberd.Xmpp.Jid.bare(iq.to)
+
+          Enum.map(Exjabberd.Mod.Mix.channel_nodes(), fn node ->
+            %{jid: channel, node: node}
           end)
 
         %Exjabberd.Xmpp.Jid{local: local, domain: domain}
@@ -1686,19 +2009,13 @@ defmodule Exjabberd.Mod.Disco do
           acc.items ++
             [
               %{jid: "conference.#{host}", name: "Multi-User Chat"},
-              %{jid: "pubsub.#{host}", name: "Publish-Subscribe"}
+              %{jid: "pubsub.#{host}", name: "Publish-Subscribe"},
+              %{jid: "mix.#{host}", name: "Mediated Information eXchange"}
             ]
 
         _ ->
           acc.items
       end
-
-    {:ok,
-     %{
-       iq
-       | type: "result",
-         payload: [%{xmlns: "http://jabber.org/protocol/disco#items", items: items}]
-     }}
   end
 
   # The `node` attribute of the disco query element, if any.

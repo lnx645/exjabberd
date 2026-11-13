@@ -109,6 +109,10 @@ defmodule Exjabberd.Config do
   @spec auth_method(host()) :: atom()
   def auth_method(host), do: get(host, :auth_method, :mnesia)
 
+  @doc "Whether C2S requires STARTTLS before SASL auth (`starttls_required:`, default false)."
+  @spec starttls_required?(host()) :: boolean()
+  def starttls_required?(host), do: get(host, :starttls_required, false) == true
+
   @doc """
   Configured SQLite auth database path (`auth_sqlite.path` in
   `exjabberd.yml`, default `"priv/auth.sqlite3"`). The
@@ -121,6 +125,55 @@ defmodule Exjabberd.Config do
     case System.get_env("EXJABBERD_AUTH_SQLITE_PATH") do
       path when is_binary(path) and path != "" -> path
       _ -> get(:global, :auth_sqlite_path, "priv/auth.sqlite3")
+    end
+  end
+
+  @doc """
+  Configured SQL auth connection (`auth_sql:` in `exjabberd.yml`).
+
+  Returns a map with `:server` (`"postgres"` is the implemented,
+  wire-verified one), `:host`, `:port`, `:database`, `:username`
+  and `:password`. Every value can be overridden with an
+  `EXJABBERD_AUTH_SQL_*` environment variable, which wins over the
+  file — the same rule as `auth_sqlite_path/0`.
+  """
+  @spec auth_sql() :: map()
+  def auth_sql do
+    base = get(:global, :auth_sql, %{})
+    server = sql_env("EXJABBERD_AUTH_SQL_SERVER", base, :server, "postgres")
+    host = sql_env("EXJABBERD_AUTH_SQL_HOST", base, :host, "127.0.0.1")
+    port = sql_env_port(base)
+    database = sql_env("EXJABBERD_AUTH_SQL_DATABASE", base, :database, "exjabberd")
+    username = sql_env("EXJABBERD_AUTH_SQL_USERNAME", base, :username, "exjabberd")
+    db_secret = sql_env("EXJABBERD_AUTH_SQL_PASSWORD", base, :password, "")
+
+    %{
+      server: server,
+      host: host,
+      port: port,
+      database: database,
+      username: username
+    }
+    |> Map.put(:password, db_secret)
+  end
+
+  defp sql_env(var, base, key, default) do
+    case System.get_env(var) do
+      v when is_binary(v) and v != "" -> v
+      _ -> Map.get(base, key, default)
+    end
+  end
+
+  defp sql_env_port(base) do
+    case System.get_env("EXJABBERD_AUTH_SQL_PORT") do
+      v when is_binary(v) and v != "" ->
+        case Integer.parse(v) do
+          {n, ""} -> n
+          _ -> Map.get(base, :port, 5432)
+        end
+
+      _ ->
+        Map.get(base, :port, 5432)
     end
   end
 
@@ -186,6 +239,43 @@ defmodule Exjabberd.Config do
   defp parse_auth_sqlite_path(%{"path" => path}) when is_binary(path) and path != "", do: path
   defp parse_auth_sqlite_path(%{path: path}) when is_binary(path) and path != "", do: path
   defp parse_auth_sqlite_path(_), do: "priv/auth.sqlite3"
+
+  # `auth_sql:` YAML → a settings map with atom keys. Accepts
+  # string or atom keys (YAML gives strings). The port is coerced
+  # to an integer; anything unusable falls back to the defaults,
+  # which point at a local PostgreSQL — the backend only connects
+  # when `auth_method: sql` is selected anyway.
+  defp parse_auth_sql(section) when is_map(section) do
+    get = fn key -> Map.get(section, key) || Map.get(section, String.to_atom(key)) end
+
+    port =
+      case get.("port") do
+        n when is_integer(n) ->
+          n
+
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> 5432
+          end
+
+        _ ->
+          5432
+      end
+
+    secret = get.("password") || ""
+
+    %{
+      server: get.("server") || "postgres",
+      host: get.("host") || "127.0.0.1",
+      port: port,
+      database: get.("database") || "exjabberd",
+      username: get.("username") || "exjabberd"
+    }
+    |> Map.put(:password, secret)
+  end
+
+  defp parse_auth_sql(_), do: parse_auth_sql(%{})
 
   # `s2s_host_overrides:` YAML → `%{domain => {host, port}}`.
   # Accepts a `{host:, port:}` map per domain, or a `"host:port"`
@@ -351,11 +441,28 @@ defmodule Exjabberd.Config do
     auth_method =
       parse_auth_method(Map.get(data, "auth_method", Map.get(data, :auth_method, "mnesia")))
 
+    # C2S STARTTLS policy (Fase 11): `starttls_required: true`
+    # withholds SASL mechanisms until the stream is encrypted and
+    # rejects plaintext auth attempts (ejabberd's listener option,
+    # applied server-wide here).
+    starttls_required =
+      case Map.get(data, "starttls_required", Map.get(data, :starttls_required, false)) do
+        true -> true
+        "true" -> true
+        _ -> false
+      end
+
     # SQLite auth database (`auth_sqlite:`): only `path` for now.
     # No credentials live here — the file holds SCRAM verifier data
     # only, never cleartext passwords.
     auth_sqlite_path =
       parse_auth_sqlite_path(Map.get(data, "auth_sqlite", Map.get(data, :auth_sqlite, %{})))
+
+    # SQL auth database (`auth_sql:`, Fase 16): connection settings
+    # for the PostgreSQL backend. The password may live here or in
+    # the EXJABBERD_AUTH_SQL_PASSWORD env var (which wins).
+    auth_sql =
+      parse_auth_sql(Map.get(data, "auth_sql", Map.get(data, :auth_sql, %{})))
 
     turn_shared_secret =
       case Map.get(turn_config, "shared_secret", Map.get(turn_config, :shared_secret)) do
@@ -389,11 +496,13 @@ defmodule Exjabberd.Config do
         |> put_in([Access.key(h, %{}), :shaper], shaper)
         |> put_in([Access.key(h, %{}), :modules], modules)
         |> put_in([Access.key(h, %{}), :auth_method], auth_method)
+        |> put_in([Access.key(h, %{}), :starttls_required], starttls_required)
       end)
       |> put_in([:global, :listen], listen)
       |> put_in([:global, :acl], acl)
       |> put_in([:global, :access_rules], access_rules)
       |> put_in([:global, :auth_sqlite_path], auth_sqlite_path)
+      |> put_in([:global, :auth_sql], auth_sql)
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)

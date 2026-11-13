@@ -195,20 +195,8 @@ defmodule Exjabberd.Auth.Mnesia do
   end
 end
 
-defmodule Exjabberd.Auth.Sql do
-  @moduledoc "SQL auth backend - `ejabberd_auth_sql` equivalent (MySQL/PgSQL/SQLite)."
-  @behaviour Exjabberd.Auth.Behaviour
-  @impl true
-  def authenticate(_host, _user, _pass), do: false
-  @impl true
-  def user_exists(_host, _user), do: false
-  @impl true
-  def create_user(_host, _user, _pass), do: {:error, :not_implemented}
-  @impl true
-  def remove_user(_host, _user), do: {:error, :not_implemented}
-  @impl true
-  def set_password(_host, _user, _pass), do: {:error, :not_implemented}
-end
+# The real SQL backend (PostgreSQL, wire-verified) lives in
+# lib/exjabberd/auth/sql.ex (`Exjabberd.Auth.Sql`, Fase 16).
 
 defmodule Exjabberd.Auth.Ldap do
   @moduledoc "LDAP auth backend - `ejabberd_auth_ldap` equivalent."

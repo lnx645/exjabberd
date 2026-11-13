@@ -54,9 +54,9 @@ defmodule Exjabberd.Http.WebSocket do
      ], ""}
   end
 
-  @doc "Take over an upgraded socket and run the XMPP-over-WebSocket session until it ends."
-  @spec serve(port(), binary(), binary()) :: :ok
-  def serve(sock, host, _peer) do
+  @doc "Take over an upgraded socket and run the XMPP-over-WebSocket session until it ends. `transport` is `:gen_tcp` (ws://) or `:ssl` (wss://)."
+  @spec serve(:gen_tcp | :ssl, port(), binary(), binary()) :: :ok
+  def serve(transport, sock, host, _peer) do
     receive do
       {:take_socket, ^sock} -> :ok
     after
@@ -64,36 +64,46 @@ defmodule Exjabberd.Http.WebSocket do
     end
 
     case XmppTransport.start(host, self()) do
-      {:ok, transport} ->
-        :inet.setopts(sock, active: :once)
-        loop(%{sock: sock, transport: transport, buf: "", frag: nil, xmpp_buf: ""})
+      {:ok, xmpp} ->
+        t_setopts(transport, sock, active: :once)
+        loop(%{sock: sock, net: transport, transport: xmpp, buf: "", frag: nil, xmpp_buf: ""})
 
       {:error, reason} ->
         Logger.warning("WebSocket XMPP session start failed: #{inspect(reason)}")
-        :gen_tcp.close(sock)
+        t_close(transport, sock)
         :ok
     end
   end
 
+  defp t_setopts(:gen_tcp, sock, opts), do: :inet.setopts(sock, opts)
+  defp t_setopts(:ssl, sock, opts), do: :ssl.setopts(sock, opts)
+  defp t_close(:gen_tcp, sock), do: :gen_tcp.close(sock)
+  defp t_close(:ssl, sock), do: :ssl.close(sock)
+  defp t_send(:gen_tcp, sock, data), do: :gen_tcp.send(sock, data)
+  defp t_send(:ssl, sock, data), do: :ssl.send(sock, data)
+
   defp loop(state) do
     receive do
       {:tcp, sock, data} when sock == state.sock ->
-        :inet.setopts(sock, active: :once)
-        state = %{state | buf: state.buf <> data}
+        on_data(state, data)
 
-        case process_frames(state) do
-          {:ok, state} -> loop(state)
-          {:closed, state} -> cleanup(state)
-        end
+      {:ssl, sock, data} when sock == state.sock ->
+        on_data(state, data)
 
       {:tcp_closed, sock} when sock == state.sock ->
+        cleanup(state)
+
+      {:ssl_closed, sock} when sock == state.sock ->
         cleanup(state)
 
       {:tcp_error, sock, _} when sock == state.sock ->
         cleanup(state)
 
+      {:ssl_error, sock, _} when sock == state.sock ->
+        cleanup(state)
+
       {:xmpp_out, xml} ->
-        send_frame(state.sock, 0x1, xml)
+        send_frame(state.net, state.sock, 0x1, xml)
         loop(state)
 
       _other ->
@@ -105,11 +115,21 @@ defmodule Exjabberd.Http.WebSocket do
     end
   end
 
+  defp on_data(state, data) do
+    t_setopts(state.net, state.sock, active: :once)
+    state = %{state | buf: state.buf <> data}
+
+    case process_frames(state) do
+      {:ok, state} -> loop(state)
+      {:closed, state} -> cleanup(state)
+    end
+  end
+
   defp cleanup(state) do
     XmppTransport.close(state.transport)
 
     try do
-      :gen_tcp.close(state.sock)
+      t_close(state.net, state.sock)
     catch
       _, _ -> :ok
     end
@@ -133,7 +153,7 @@ defmodule Exjabberd.Http.WebSocket do
         {:ok, state}
 
       {:error, :too_large} ->
-        send_frame(state.sock, 0x8, <<1009::16>>)
+        send_frame(state.net, state.sock, 0x8, <<1009::16>>)
         {:closed, state}
 
       {:error, _} ->
@@ -143,12 +163,12 @@ defmodule Exjabberd.Http.WebSocket do
 
   defp handle_frame(%{opcode: 0x8, payload: payload}, state) do
     # Close: echo the close frame and end.
-    send_frame(state.sock, 0x8, payload)
+    send_frame(state.net, state.sock, 0x8, payload)
     {:closed, state}
   end
 
   defp handle_frame(%{opcode: 0x9, payload: payload}, state) do
-    send_frame(state.sock, 0xA, payload)
+    send_frame(state.net, state.sock, 0xA, payload)
     {:ok, state}
   end
 
@@ -182,11 +202,11 @@ defmodule Exjabberd.Http.WebSocket do
         Enum.reduce_while(units, {:ok, state}, fn unit, {:ok, acc} ->
           case XmppTransport.handle_unit(acc.transport, unit) do
             {:ok, transport, outs} ->
-              Enum.each(outs, &send_frame(acc.sock, 0x1, &1))
+              Enum.each(outs, &send_frame(acc.net, acc.sock, 0x1, &1))
               {:cont, {:ok, %{acc | transport: transport}}}
 
             {:closed, transport, outs} ->
-              Enum.each(outs, &send_frame(acc.sock, 0x1, &1))
+              Enum.each(outs, &send_frame(acc.net, acc.sock, 0x1, &1))
               {:halt, {:closed, %{acc | transport: transport}}}
           end
         end)
@@ -249,7 +269,7 @@ defmodule Exjabberd.Http.WebSocket do
     |> :binary.list_to_bin()
   end
 
-  defp send_frame(sock, opcode, payload) when is_binary(payload) do
+  defp send_frame(net, sock, opcode, payload) when is_binary(payload) do
     header =
       case byte_size(payload) do
         len when len < 126 ->
@@ -262,7 +282,7 @@ defmodule Exjabberd.Http.WebSocket do
           <<1::1, 0::3, opcode::4, 0::1, 127::7, len::64>>
       end
 
-    case :gen_tcp.send(sock, header <> payload) do
+    case t_send(net, sock, header <> payload) do
       :ok -> :ok
       {:error, reason} -> Logger.debug("WebSocket send failed: #{inspect(reason)}")
     end

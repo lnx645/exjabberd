@@ -47,6 +47,58 @@ def ensure_users(users):
             print("SETUP FAILED: is the dev server running on 5222?", file=sys.stderr)
             sys.exit(2)
 
+def _raw_login(user, resource):
+    import base64
+    s = socket.create_connection(("127.0.0.1", 5222), timeout=10)
+    s.settimeout(6)
+    buf = b""
+    def until(needle):
+        nonlocal buf
+        import time
+        end = time.time() + 6
+        while time.time() < end:
+            if needle.encode() in buf:
+                out, buf = buf, b""
+                return out.decode(errors="replace")
+            try:
+                chunk = s.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        out, buf = buf, b""
+        return out.decode(errors="replace")
+    s.sendall(b"<?xml version='1.0'?><stream:stream to='localhost' xmlns='jabber:client' "
+              b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
+    until("stream:features")
+    b64 = base64.b64encode(f"\0{user}\0secret".encode()).decode()
+    s.sendall(f"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>{b64}</auth>".encode())
+    until("success")
+    s.sendall(b"<?xml version='1.0'?><stream:stream to='localhost' xmlns='jabber:client' "
+              b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
+    until("stream:features")
+    s.sendall(f"<iq type='set' id='b'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>{resource}</resource></bind></iq>".encode())
+    until("bind")
+    return s, until
+
+def pre_subscribe():
+    """RFC 6121 mutual subscription andi<->budi via raw sockets, so the
+    slixmpp clients below start with subscription='both' (ejabberd only
+    delivers presence between subscribed contacts)."""
+    a, a_until = _raw_login("andi", "pre-a")
+    b, b_until = _raw_login("budi", "pre-b")
+    a.sendall(b"<presence type='subscribe' to='budi@localhost'/>")
+    b_until("subscribe")
+    b.sendall(b"<presence type='subscribed' to='andi@localhost'/>")
+    a_until("subscribed")
+    b.sendall(b"<presence type='subscribe' to='andi@localhost'/>")
+    a_until("subscribe")
+    a.sendall(b"<presence type='subscribed' to='budi@localhost'/>")
+    b_until("subscribed")
+    a.close(); b.close()
+    print("[SETUP] mutual subscription andi<->budi established", flush=True)
+
 class Client(slixmpp.ClientXMPP):
     def __init__(self, jid, pw, peer_box):
         super().__init__(jid, pw)
@@ -151,4 +203,5 @@ async def main():
     print(f"\nSUMMARY: {n}/{len(RESULTS)} passed")
 
 ensure_users(["andi", "budi", "carol"])
+pre_subscribe()
 asyncio.run(main())

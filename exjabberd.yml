@@ -36,8 +36,9 @@ listen:
     max_stanza_size: 262144
     shaper: c2s_shaper
     access: c2s
-    # STARTTLS is offered on this port but optional. There is no
-    # starttls_required option yet: PLAIN/SCRAM also work without TLS.
+    # STARTTLS is offered on this port. Whether it is *required*
+    # before authentication is controlled by the top-level
+    # `starttls_required` option below (default: optional).
   -
     port: 5223
     ip: "::"
@@ -57,9 +58,15 @@ listen:
     ip: "::"
     module: exjabberd_http
     # Serves the web admin (/admin), REST API (/api), BOSH
-    # (/bosh, /http-bind), XMPP over WebSocket (/ws) and HTTP File
-    # Upload (/upload). Plain HTTP only; put a reverse proxy with
-    # TLS in front of it in production.
+    # (/bosh, /http-bind), XMPP over WebSocket (/ws), HTTP File
+    # Upload (/upload) and the captcha endpoint (/captcha).
+  -
+    port: 5443
+    ip: "::"
+    module: exjabberd_http
+    tls: true
+    # The same HTTP stack over TLS (HTTPS + wss), using the server
+    # certificate — ejabberd's 5443 listener.
   -
     port: 1883
     ip: "::"
@@ -86,13 +93,22 @@ s2s_use_starttls: optional
 ## verifier data in the Mnesia `:passwd` table. `sqlite` uses the
 ## SQLite file below instead (same verifier format, so accounts
 ## move between backends with `mix exjabberd.auth.migrate` and keep
-## working — no password reset). Other ejabberd names (`sql`,
-## `ldap`, `anonymous`, `jwt`, `external`, `oauth`, `pam`) are
+## working — no password reset). `sql` is a real PostgreSQL backend
+## (Fase 16, see `auth_sql:` below). The remaining ejabberd names
+## (`ldap`, `anonymous`, `jwt`, `external`, `oauth`, `pam`) are
 ## recognised but only the stubs from before exist for them, except
 ## `anonymous` which works as before; an unknown value warns and
 ## falls back to `mnesia`.
 auth_method: mnesia
 # auth_method: sqlite
+# auth_method: sql
+
+## Require STARTTLS before SASL authentication (ejabberd's
+## `starttls_required`): when true, SASL mechanisms are not
+## advertised on a plaintext stream, <starttls> is marked
+## <required/>, and plaintext auth attempts are rejected with a
+## policy-violation stream error.
+starttls_required: false
 
 ## SQLite auth database (only used when `auth_method: sqlite`).
 ## The file holds SCRAM verifier data only, never cleartext
@@ -101,6 +117,18 @@ auth_method: mnesia
 ## this value when set.
 auth_sqlite:
   path: "priv/auth.sqlite3"
+
+## SQL auth database (only used when `auth_method: sql`, Fase 16).
+## PostgreSQL is implemented and wire-verified (native protocol
+## client, SCRAM-SHA-256 connection auth); MySQL is not implemented.
+## Every value can be overridden by an EXJABBERD_AUTH_SQL_* env var.
+# auth_sql:
+#   server: postgres
+#   host: "127.0.0.1"
+#   port: 5432
+#   database: exjabberd
+#   username: exjabberd
+#   password: <redacted> # or EXJABBERD_AUTH_SQL_PASSWORD
 
 # Dialback secret (XEP-0220): shared by every server in this
 # administrative domain; keys are HMAC-SHA256 over it. When absent,
@@ -156,10 +184,15 @@ http:
   upload_secret: ""
   upload_dir: "priv/uploads"
   upload_max_size: 10485760
+  upload_quota: 104857600
   upload_expiry_seconds: 3600
   upload_url_base: ""
   bosh_wait: 60
   bosh_inactivity: 60
+  ## ACME http-01 challenges served at /.well-known/acme-challenge/<token>.
+  ## Map token -> key authorization; filled in by your ACME client
+  ## during issuance (empty by default):
+  acme_challenges: {}
 
 ## STUN/TURN (XEP-0215, RFC 5389/5766) — Fase 5. The server listens
 ## on `port` (UDP + TCP when `tcp: true`); it is NOT a `listen:`
@@ -297,6 +330,7 @@ modules:
   mod_blocking: {}
   mod_bosh: {}
   mod_caps: {}
+  mod_captcha: {}
   mod_carboncopy: {}
   mod_client_state:
     max_queue: 100
@@ -319,6 +353,7 @@ modules:
     # Maximum archived messages kept per user (oldest dropped first).
     max_archive_size: 500
   mod_jingle: {}
+  mod_mix: {}
   mod_mqtt: {}
   mod_omemo: {}
   mod_muc:

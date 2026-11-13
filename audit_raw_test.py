@@ -125,6 +125,16 @@ try:
         log("andi: XEP-0092 version answered", "type='result'" in r, r[:300].replace("\n", " ") or "(no reply in 6s)")
 
     if ok_a and ok_b:
+        # RFC 6121: presence only flows between subscribed contacts
+        # (ejabberd behaviour) — do the mutual handshake first.
+        andi.send("<presence type='subscribe' to='budi@localhost'/>")
+        budi.recv_until("subscribe", timeout=4)
+        budi.send("<presence type='subscribed' to='andi@localhost'/>")
+        andi.recv_until("subscribed", timeout=4)
+        budi.send("<presence type='subscribe' to='andi@localhost'/>")
+        andi.recv_until("subscribe", timeout=4)
+        andi.send("<presence type='subscribed' to='budi@localhost'/>")
+        budi.recv_until("subscribed", timeout=4)
         # presence both ways
         andi.send("<presence/>")
         time.sleep(0.5)

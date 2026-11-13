@@ -82,11 +82,11 @@ defmodule Exjabberd.Router do
   @doc "Route a stanza. Mirrors `ejabberd_router:route/1` dengan `route_error`."
   @spec route(map()) :: :ok | {:error, term()}
   def route(%{to: nil, name: :presence} = stanza) do
-    # Bare presence (no `to`): the user announcing themselves. ejabberd
-    # broadcasts it to roster contacts with a subscription; this server
-    # has no subscription enforcement yet, so initial presence is
-    # broadcast to every online local session (documented simplification
-    # until roster-subscription broadcast lands).
+    # Bare presence (no `to`): the user announcing themselves. It is
+    # fanned out to the sender's own sessions plus every contact
+    # subscribed to the sender's presence (roster items `from` /
+    # `both`) — RFC 6121 §4.2/§4.5, like ejabberd. It is never
+    # broadcast to unrelated users.
     broadcast_presence(stanza)
     :ok
   end
@@ -97,6 +97,46 @@ defmodule Exjabberd.Router do
   end
 
   def route(%{to: to} = stanza) do
+    # XEP-0016 / XEP-0191 enforcement point: every stanza addressed
+    # to a local user passes the recipient's privacy/block lists in
+    # the router, so online delivery, offline storage and inbound
+    # S2S are all covered (ejabberd runs mod_privacy on the
+    # filter_packet hook in its router).
+    case privacy_verdict(stanza) do
+      :deny -> deny_stanza(stanza)
+      :allow -> route_checked(stanza, to)
+    end
+  end
+
+  defp privacy_verdict(%{name: name} = stanza) when name in [:message, :presence, :iq] do
+    case stanza.to do
+      %Exjabberd.Xmpp.Jid{local: local, domain: domain}
+      when is_binary(local) and local != "" ->
+        if my_host?(domain) do
+          case Exjabberd.Hooks.run(:privacy_check_packet, domain, stanza) do
+            :deny -> :deny
+            _ -> :allow
+          end
+        else
+          :allow
+        end
+
+      _ ->
+        :allow
+    end
+  end
+
+  defp privacy_verdict(_stanza), do: :allow
+
+  defp deny_stanza(%{name: :iq, type: type} = stanza) when type in ["get", "set"] do
+    # XEP-0191: a blocked IQ is answered with service-unavailable.
+    route_error(stanza, "service-unavailable")
+    :ok
+  end
+
+  defp deny_stanza(_stanza), do: :ok
+
+  defp route_checked(stanza, to) do
     jid_str =
       case to do
         %Exjabberd.Xmpp.Jid{} -> Exjabberd.Xmpp.Jid.bare(to)
@@ -130,6 +170,9 @@ defmodule Exjabberd.Router do
               conference_domain?(domain) ->
                 route_conference(stanza, domain)
 
+              mix_domain?(domain) ->
+                route_mix(stanza, domain)
+
               pubsub_domain?(domain) ->
                 route_pubsub(stanza, domain)
 
@@ -154,6 +197,17 @@ defmodule Exjabberd.Router do
   end
 
   def conference_domain?(_), do: false
+
+  @doc "True when `domain` is the `mix.` service of a local host."
+  @spec mix_domain?(binary()) :: boolean()
+  def mix_domain?(domain) when is_binary(domain) do
+    case domain do
+      "mix." <> base -> my_host?(base)
+      _ -> false
+    end
+  end
+
+  def mix_domain?(_), do: false
 
   @doc "True when `domain` is the `pubsub.` service of a local host."
   @spec pubsub_domain?(binary()) :: boolean()
@@ -227,22 +281,52 @@ defmodule Exjabberd.Router do
 
     case stanza.name do
       :presence ->
-        if stanza.type == "unavailable" do
-          Exjabberd.Mod.Muc.leave(host, bare, from_bare, resource)
-        else
-          Exjabberd.Mod.Muc.join(host, bare, from_bare, resource)
-        end
+        cond do
+          stanza.type == "unavailable" ->
+            Exjabberd.Mod.Muc.leave(host, bare, from_bare, resource)
+            :ok
 
-        :ok
+          stanza.type in [nil, "available"] ->
+            # XEP-0045 join: the room password travels in
+            # <x xmlns='http://jabber.org/protocol/muc'><password/>.
+            password =
+              case Exjabberd.Xmpp.Stanza.child(stanza.payload, "x") do
+                nil -> nil
+                x -> Exjabberd.Xmpp.Stanza.child_text(x.children, "password")
+              end
+
+            case Exjabberd.Mod.Muc.join(host, bare, from_bare, resource, password: password) do
+              :ok -> :ok
+              {:error, condition} -> route_presence_error(stanza, condition)
+              _ -> :ok
+            end
+
+          true ->
+            :ok
+        end
 
       :message ->
-        body = Exjabberd.Xmpp.Stanza.child_text(stanza.payload, "body") || ""
+        subject_el = Exjabberd.Xmpp.Stanza.child(stanza.payload, "subject")
 
-        if stanza.type in ["groupchat", nil] do
-          Exjabberd.Mod.Muc.send_message(host, bare, from_bare, body)
+        cond do
+          stanza.type in ["groupchat", nil] and subject_el != nil ->
+            Exjabberd.Mod.Muc.set_subject(
+              host,
+              bare,
+              from_bare,
+              Exjabberd.Xmpp.Stanza.text_of(subject_el)
+            )
+
+            :ok
+
+          stanza.type in ["groupchat", nil] ->
+            body = Exjabberd.Xmpp.Stanza.child_text(stanza.payload, "body") || ""
+            Exjabberd.Mod.Muc.send_message(host, bare, from_bare, body)
+            :ok
+
+          true ->
+            :ok
         end
-
-        :ok
 
       :iq when stanza.type in ["get", "set"] ->
         # Service/room IQ (disco, muc#owner, muc#admin): dispatch locally
@@ -252,6 +336,92 @@ defmodule Exjabberd.Router do
           {:error, _, err} -> route(err)
           {:error, reason} -> route(Exjabberd.Iq.error_iq(stanza, error_condition(reason)))
           _ -> :ok
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Answer a failed MUC join with a presence error (XEP-0045 §7.2):
+  # from the room/nick the user tried to join, with the XMPP error
+  # condition for the refusal reason.
+  defp route_presence_error(stanza, condition) do
+    {name, etype} =
+      case condition do
+        :forbidden -> {"forbidden", "auth"}
+        :registration_required -> {"registration-required", "auth"}
+        :not_authorized -> {"not-authorized", "auth"}
+        :conflict -> {"conflict", "cancel"}
+        :resource_constraint -> {"resource-constraint", "wait"}
+        _ -> {"service-unavailable", "cancel"}
+      end
+
+    err = %{
+      stanza
+      | type: "error",
+        from: stanza.to,
+        to: stanza.from,
+        payload: [
+          %{
+            name: "error",
+            attrs: %{"type" => etype},
+            children: [
+              %{
+                name: name,
+                attrs: %{"xmlns" => "urn:ietf:params:xml:ns:xmpp-stanzas"},
+                children: []
+              }
+            ]
+          }
+        ]
+    }
+
+    route(err)
+    :ok
+  end
+
+  # Stanza addressed to mix.<host> or to a MIX channel
+  # (channel@mix.<host>) — XEP-0369.
+  defp route_mix(stanza, domain) do
+    host = String.replace_prefix(domain, "mix.", "")
+    bare = from_bare(stanza.to)
+    from_bare_jid = from_bare(stanza.from)
+
+    case stanza.name do
+      :iq when stanza.type in ["get", "set"] ->
+        # Participants retrieval is a PubSub-shaped IQ the generic
+        # PubSub handler cannot resolve for channels.
+        result =
+          if bare != domain and Exjabberd.Mod.Mix.participants_query?(stanza) do
+            # Iq.dispatch normally swaps from/to on results; this
+            # direct call must do it itself.
+            case Exjabberd.Mod.Mix.participants_iq(stanza, host) do
+              {:ok, %{type: "result"} = res} ->
+                {:ok, %{res | from: stanza.to || host, to: stanza.from}}
+
+              other ->
+                other
+            end
+          else
+            Exjabberd.Iq.dispatch(stanza, host)
+          end
+
+        case result do
+          {:ok, res} -> route(res)
+          {:error, _, err} -> route(err)
+          {:error, reason} -> route(Exjabberd.Iq.error_iq(stanza, error_condition(reason)))
+          _ -> :ok
+        end
+
+        :ok
+
+      :message ->
+        if stanza.type in ["groupchat", nil] do
+          body = Exjabberd.Xmpp.Stanza.child_text(stanza.payload, "body") || ""
+          Exjabberd.Mod.Mix.send_message(host, bare, from_bare_jid, body)
         end
 
         :ok
@@ -302,9 +472,17 @@ defmodule Exjabberd.Router do
 
         :ok
 
+      :message ->
+        # The one message the service consumes: a subscription
+        # authorization reply (XEP-0060 §6.5). Anything else
+        # addressed to the service is dropped.
+        if Exjabberd.Mod.PubSub.authorization_reply?(stanza) do
+          Exjabberd.Mod.PubSub.handle_authorization_reply(stanza, host, nil)
+        end
+
+        :ok
+
       _ ->
-        # Messages/presence to the service itself are dropped (the
-        # service only speaks IQ; notifications flow the other way).
         :ok
     end
   end
@@ -333,11 +511,120 @@ defmodule Exjabberd.Router do
 
   defp split_jid(_), do: {"", ""}
 
-  # Broadcast a bare presence to every online session except the
-  # resource that sent it. Cluster-wide (Fase 7): all_sessions/0
-  # includes sessions on other nodes, so presence crosses the
-  # cluster — the roster-subscription simplification (broadcast to
-  # every online session) is unchanged, only its scope grew.
+  # --- presence state + fanout (RFC 6121) ---
+
+  @presence_table :exjabberd_presence_state
+
+  defp ensure_presence_table do
+    if :ets.whereis(@presence_table) == :undefined do
+      # Race-safe lazy creation: the fanout runs inside many C2S
+      # processes at once, so two of them can both see :undefined.
+      try do
+        :ets.new(@presence_table, [
+          :named_table,
+          :public,
+          :set,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+      rescue
+        ArgumentError -> @presence_table
+      end
+    end
+
+    @presence_table
+  end
+
+  @doc "Last recorded available-presence stanzas of a user's sessions (keyed by full JID)."
+  @spec recorded_presences(binary()) :: [map()]
+  def recorded_presences(bare) do
+    ensure_presence_table()
+    prefix = String.downcase(bare) <> "/"
+
+    :ets.tab2list(@presence_table)
+    |> Enum.filter(fn {full, _stanza} -> String.starts_with?(full, prefix) end)
+    |> Enum.map(fn {_full, stanza} -> stanza end)
+  end
+
+  @doc "Whether this full JID has an available presence on record."
+  @spec presence_recorded?(term()) :: boolean()
+  def presence_recorded?(%Exjabberd.Xmpp.Jid{} = jid) do
+    ensure_presence_table()
+    :ets.member(@presence_table, Exjabberd.Xmpp.Jid.to_string(jid))
+  end
+
+  def presence_recorded?(_), do: false
+
+  # Fan a bare presence out: the sender's own sessions + the
+  # sessions of every contact subscribed to the sender's presence.
+  # The last available presence per full JID is recorded so that
+  # initial presence (and subscription approvals) can replay the
+  # current presence of subscribed contacts without probes.
+  defp broadcast_presence(%{from: %Exjabberd.Xmpp.Jid{} = from} = stanza) do
+    ensure_presence_table()
+    sender_bare = Exjabberd.Xmpp.Jid.bare(from)
+    host = from.domain
+    user = from.local
+    full = Exjabberd.Xmpp.Jid.to_string(from)
+    sender_pid = sender_pid(stanza)
+
+    initial? =
+      case stanza.type do
+        "unavailable" ->
+          :ets.delete(@presence_table, full)
+          false
+
+        nil ->
+          first = not :ets.member(@presence_table, full)
+          :ets.insert(@presence_table, {full, stanza})
+          first
+
+        _ ->
+          false
+      end
+
+    if stanza.type in [nil, "unavailable"] do
+      roster = Exjabberd.Mod.Roster.get_roster(host, user)
+      bare_to = %Exjabberd.Xmpp.Jid{local: user, domain: host}
+
+      # Recipients as {pid, recipient_bare} — each delivered copy is
+      # addressed to its own recipient, like ejabberd does.
+      own =
+        Exjabberd.SessionManager.get_sessions(sender_bare, host)
+        |> Enum.map(fn {_res, pid, _prio} -> {pid, sender_bare} end)
+
+      subscribed_contacts =
+        roster
+        |> Enum.filter(fn item -> Map.get(item, :subscription) in [:from, :both] end)
+        |> Enum.flat_map(fn item ->
+          Exjabberd.SessionManager.get_sessions(item.jid, host)
+          |> Enum.map(fn {_res, pid, _prio} -> {pid, item.jid} end)
+        end)
+
+      (own ++ subscribed_contacts)
+      |> Enum.uniq_by(fn {pid, _bare} -> pid end)
+      |> Enum.each(fn {pid, bare} ->
+        if pid != sender_pid do
+          [u, h] = String.split(bare, "@", parts: 2)
+          send(pid, {:route, %{stanza | to: %Exjabberd.Xmpp.Jid{local: u, domain: h}}})
+        end
+      end)
+
+      # Initial presence: replay the recorded presence of every
+      # contact the sender subscribes to (`to`/`both` items).
+      if initial? and not is_nil(sender_pid) do
+        roster
+        |> Enum.filter(fn item -> Map.get(item, :subscription) in [:to, :both] end)
+        |> Enum.flat_map(fn item -> recorded_presences(item.jid) end)
+        |> Enum.each(fn pres -> send(sender_pid, {:route, %{pres | to: bare_to}}) end)
+      end
+    end
+
+    :ok
+  end
+
+  # Non-JID senders (should not occur for client presence): keep the
+  # legacy behaviour of reaching the sender's own sessions only.
   defp broadcast_presence(stanza) do
     sender_pid = sender_pid(stanza)
 

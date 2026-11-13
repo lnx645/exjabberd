@@ -54,7 +54,10 @@ defmodule Exjabberd.Application do
       # SQLite auth backend (Fase 8): opens its database file lazily
       # on first use, so a missing/unwritable path can never crash
       # the boot — calls fail loudly instead.
-      {Exjabberd.Auth.Sqlite, []}
+      {Exjabberd.Auth.Sqlite, []},
+      # SQL auth backend (Fase 16): same lazy-connect contract —
+      # the PostgreSQL connection opens on first use, never at boot.
+      {Exjabberd.Auth.Sql, []}
     ]
 
     opts = [strategy: :one_for_one, name: Exjabberd.Supervisor]
@@ -222,9 +225,12 @@ defmodule Exjabberd.Application do
           )
 
         module == "exjabberd_http" ->
+          tls = Map.get(entry, "tls") == true
+          name = if tls, do: Exjabberd.Http.Server.TLS, else: Exjabberd.Http.Server
+
           start_listener(
-            {Exjabberd.Http.Server, [port: port, host: host, name: Exjabberd.Http.Server]},
-            "HTTP on #{port} (admin/BOSH/WS/upload/API)"
+            {Exjabberd.Http.Server, [port: port, tls: tls, host: host, name: name]},
+            "HTTP#{if tls, do: "S", else: ""} on #{port} (admin/BOSH/WS/upload/API)"
           )
 
         module == "exjabberd_mqtt" ->

@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Exjabberd.Auth.Migrate do
 
   alias Exjabberd.Auth.Migrate
   alias Exjabberd.Auth.Mnesia, as: AuthMnesia
+  alias Exjabberd.Auth.Sql, as: AuthSql
   alias Exjabberd.Auth.Sqlite, as: AuthSqlite
   alias Exjabberd.Config
   alias Exjabberd.Mnesia
@@ -46,6 +47,7 @@ defmodule Mix.Tasks.Exjabberd.Auth.Migrate do
       end
 
     {:ok, _} = AuthSqlite.start_link(sqlite_opts)
+    {:ok, _} = AuthSql.start_link([])
 
     case Migrate.run(from: from, to: to, host: host, dry_run: dry_run?) do
       {:ok, %{copied: copied, skipped: skipped, failed: failed}} ->

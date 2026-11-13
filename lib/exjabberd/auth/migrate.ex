@@ -23,7 +23,7 @@ defmodule Exjabberd.Auth.Migrate do
 
   require Logger
 
-  @type backend :: :mnesia | :sqlite
+  @type backend :: :mnesia | :sqlite | :sql
   @type summary :: %{
           copied: non_neg_integer(),
           skipped: [binary()],
@@ -90,6 +90,8 @@ defmodule Exjabberd.Auth.Migrate do
   def backend_module("mnesia"), do: {:ok, Exjabberd.Auth.Mnesia}
   def backend_module(:sqlite), do: {:ok, Exjabberd.Auth.Sqlite}
   def backend_module("sqlite"), do: {:ok, Exjabberd.Auth.Sqlite}
+  def backend_module(:sql), do: {:ok, Exjabberd.Auth.Sql}
+  def backend_module("sql"), do: {:ok, Exjabberd.Auth.Sql}
   def backend_module(other), do: {:error, {:unsupported_backend, other}}
 
   defp check_verifiers(source, name) do

@@ -342,13 +342,21 @@ defmodule Exjabberd.Listener.C2S do
   end
 
   defp handle_auth(unit, state) do
-    mechanism = attr(unit, "mechanism") || ""
-    body = inner_text(unit)
+    # `starttls_required`: no authentication on a plaintext stream —
+    # the mechanisms were not advertised either; a client that tries
+    # anyway gets a stream error and the connection closes.
+    if not state.tls and Exjabberd.Config.starttls_required?(state.host || "localhost") do
+      send_stream_error(state, "policy-violation", "STARTTLS is required before authentication")
+      {:closed, state}
+    else
+      mechanism = attr(unit, "mechanism") || ""
+      body = inner_text(unit)
 
-    case mechanism do
-      "PLAIN" -> handle_plain(body, state)
-      "SCRAM-SHA-256" -> handle_scram_first(body, state)
-      _ -> send_sasl_failure(state, "invalid-mechanism")
+      case mechanism do
+        "PLAIN" -> handle_plain(body, state)
+        "SCRAM-SHA-256" -> handle_scram_first(body, state)
+        _ -> send_sasl_failure(state, "invalid-mechanism")
+      end
     end
   end
 
@@ -725,6 +733,10 @@ defmodule Exjabberd.Listener.C2S do
       case Exjabberd.Iq.payload_xmlns(stanza) do
         "http://jabber.org/protocol/pubsub" -> true
         "http://jabber.org/protocol/pubsub#owner" -> true
+        # vCard (XEP-0054) and last activity (XEP-0012) are answered
+        # by the server on behalf of the addressee, like ejabberd.
+        "vcard-temp" -> true
+        "jabber:iq:last" -> true
         "http://jabber.org/protocol/disco#info" -> bare_jid?(stanza.to)
         "http://jabber.org/protocol/disco#items" -> bare_jid?(stanza.to)
         _ -> false

@@ -8,8 +8,14 @@
 #   3. single-node dev server + every single-node probe:
 #      audit_raw_test.py, audit_slix_test.py, test_sm_carbons_csi.py,
 #      test_mam_pubsub.py, test_mam_pubsub_slix.py, test_http_phase4.py,
-#      test_jingle_phase5.py, test_stun_turn_phase5.py, test_mqtt_phase6.py
+#      test_jingle_phase5.py, test_stun_turn_phase5.py, test_mqtt_phase6.py,
+#      test_longtail_phase10.py, test_subscriptions_phase11.py
 #   4. test_auth_sqlite_phase8.py (boots its own server)
+#   4b. test_starttls_anon_phase11.py (boots its own server)
+#   4c. a fresh dev server for the probes that assume one on 5222:
+#      test_muc_admin_phase12.py, test_pubsub_extra_phase13.py,
+#      test_mix_phase14.py; then test_http_edges_phase15.py
+#      (boots its own server)
 #   5. two-node S2S (boot_s2s_nodes.sh + test_s2s.py + test_s2s_slix.py)
 #   6. two-node cluster (boot_cluster_nodes.sh + test_cluster_phase7.py)
 #
@@ -137,6 +143,15 @@ stop_dev_server() {
   fi
 }
 
+# Boot the single-node dev server and wait for port 5222.
+# Returns non-zero when the server does not come up in time.
+start_dev_server() {
+  (cd "$REPO" && setsid nohup elixir --sname exjabberd -S mix run --no-halt > "$DEV_LOG" 2>&1 < /dev/null & disown -a)
+  sleep 2
+  pgrep -f -- "-sname exjabberd" | head -1 > "$DEV_PIDFILE"
+  wait_port 5222 1 90
+}
+
 cleanup() {
   stop_dev_server
   "$REPO/boot_s2s_nodes.sh" stop >/dev/null 2>&1 || true
@@ -166,10 +181,7 @@ run_step "02-mix-test" env ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix t
 
 # --- 3. single-node probes ----------------------------------------------
 echo "--- step: 03-dev-server (single node on 5222) ---"
-(cd "$REPO" && setsid nohup elixir --sname exjabberd -S mix run --no-halt > "$DEV_LOG" 2>&1 < /dev/null & disown -a)
-sleep 2
-pgrep -f -- "-sname exjabberd" | head -1 > "$DEV_PIDFILE"
-if wait_port 5222 1 90; then
+if start_dev_server; then
   record "03-dev-server" 0
 else
   record "03-dev-server" 1; tail -30 "$DEV_LOG"; echo "dev server failed to start — see $DEV_LOG"
@@ -184,12 +196,43 @@ if [ "$FAILURES" = 0 ]; then
   run_probe "test_jingle_phase5.py"
   run_probe "test_stun_turn_phase5.py"
   run_probe "test_mqtt_phase6.py"
+  run_probe "test_longtail_phase10.py"
+  run_probe "test_subscriptions_phase11.py"
 fi
 stop_dev_server
 wait_port 5222 0 30 || echo "WARNING: port 5222 still open after stopping the dev server"
 
 # --- 4. SQLite auth probe (boots its own server) ------------------------
 run_probe "test_auth_sqlite_phase8.py"
+
+# --- 4a2. SQL (PostgreSQL) auth probe (boots its own server + PG) -------
+run_probe "test_auth_sql_phase16.py"
+
+# --- 4b. starttls_required + anonymous auth (boots its own server) ------
+run_probe "test_starttls_anon_phase11.py"
+
+# --- 4c. Fase 12-14 probes ------------------------------------------------
+# These three probes ASSUME a dev server on 5222 (they create their
+# users over Erlang RPC against the running node), so boot a fresh one
+# for them; the step-03 server was stopped above on purpose (the Fase 8
+# probe needs the port for its own server).
+echo "--- step: 04c-dev-server (single node on 5222, for fase 12-14 probes) ---"
+if start_dev_server; then
+  record "04c-dev-server" 0
+  run_probe "test_muc_admin_phase12.py"
+  run_probe "test_pubsub_extra_phase13.py"
+  run_probe "test_mix_phase14.py"
+else
+  record "04c-dev-server" 1; tail -30 "$DEV_LOG"; echo "dev server failed to start — see $DEV_LOG"
+  record "test_muc_admin_phase12.py" 1
+  record "test_pubsub_extra_phase13.py" 1
+  record "test_mix_phase14.py" 1
+fi
+stop_dev_server
+wait_port 5222 0 30 || echo "WARNING: port 5222 still open after stopping the dev server"
+
+# --- 4d. HTTP edges (boots its own server) --------------------------------
+run_probe "test_http_edges_phase15.py"
 
 # --- 5. S2S (two nodes) ---------------------------------------------------
 echo "--- step: 05-s2s-nodes ---"

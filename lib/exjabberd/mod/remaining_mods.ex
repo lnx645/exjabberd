@@ -1,9 +1,10 @@
 defmodule Exjabberd.Mod.Remaining do
   @moduledoc """
-  Remaining ejabberd modules - (partial implementation), now with real logic.
+  Remaining ejabberd modules.
 
-  Each mod below has functional ETS/state, not just ` :ok` stubs.
-  This guarantees "1000000% sama" — no feature omitted.
+  Each module below carries its own moduledoc stating honestly what
+  is implemented and verified; see `docs/PARITY.md` for the
+  wire-verified status of every feature.
   """
 end
 
@@ -24,15 +25,45 @@ defmodule Exjabberd.Mod.Adhoc do
   def stop(_host), do: :ok
   @doc "Register ad-hoc command."
   def register(host, node, mod, fun) do
+    ensure_table()
     :ets.insert(@table, {{host, node}, {mod, fun}})
     :ok
   end
 
+  @doc "Register ad-hoc command with a human-readable name (shown in disco#items)."
+  def register_command(host, node, name, mod, fun) do
+    ensure_table()
+    :ets.insert(@table, {{host, node}, {name, mod, fun}})
+    :ok
+  end
+
+  @doc "List registered commands for a host as `{node, name}` pairs."
+  @spec list_commands(binary()) :: [{binary(), binary()}]
+  def list_commands(host) do
+    ensure_table()
+
+    :ets.match(@table, {{host, :"$1"}, :"$2"})
+    |> Enum.map(fn
+      [node, {name, _mod, _fun}] when is_binary(name) -> {node, name}
+      [node, {_mod, _fun}] -> {node, node}
+    end)
+    |> Enum.sort()
+  end
+
   @doc "Execute command."
   def execute(host, node, args) do
+    ensure_table()
+
     case :ets.lookup(@table, {host, node}) do
+      [{{_, _}, {_name, m, f}}] -> apply(m, f, args)
       [{{_, _}, {m, f}}] -> apply(m, f, args)
       [] -> {:error, :item_not_found}
+    end
+  end
+
+  defp ensure_table do
+    if :ets.whereis(@table) == :undefined do
+      :ets.new(@table, [:named_table, :public, :set])
     end
   end
 end
@@ -208,11 +239,31 @@ defmodule Exjabberd.Mod.Bosh do
 end
 
 defmodule Exjabberd.Mod.Captcha do
-  @moduledoc "`mod_captcha` (XEP-0158) (partial implementation)."
+  @moduledoc """
+  `mod_captcha` (XEP-0158): one-time numeric challenges.
+
+  `generate/1` creates a challenge with a random 5-digit answer,
+  stored server-side only — the answer leaves the server solely as
+  the rendered PNG image served by `Exjabberd.Http.Captcha`.
+  `verify/3` compares the submitted answer, expires challenges
+  after #{300} seconds and burns a challenge on ANY verification
+  attempt (right or wrong), so answers cannot be brute-forced by
+  repetition.
+  """
   use Exjabberd.Mod.GenMod
   @table :exjabberd_captcha
+  @ttl_seconds 300
+
   @impl true
   def start(_host, _opts) do
+    ensure_table()
+    :ok
+  end
+
+  @impl true
+  def stop(_host), do: :ok
+
+  defp ensure_table do
     if :ets.whereis(@table) == :undefined do
       :ets.new(@table, [:named_table, :public, :set])
     end
@@ -220,20 +271,46 @@ defmodule Exjabberd.Mod.Captcha do
     :ok
   end
 
-  @impl true
-  def stop(_host), do: :ok
-  @doc "Generate captcha."
+  @doc "Create a challenge. Returns `{:ok, id}`; the answer is never returned."
+  @spec generate(binary()) :: {:ok, binary()}
   def generate(host) do
-    id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-    :ets.insert(@table, {{host, id}, %{created: System.system_time(:second)}})
+    ensure_table()
+    id = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+    answer = Integer.to_string(:rand.uniform(90_000) + 9_999)
+    :ets.insert(@table, {{host, id}, %{answer: answer, created: System.system_time(:second)}})
     {:ok, id}
   end
 
-  @doc "Verify captcha."
-  def verify(host, id, _answer) do
+  @doc "The stored answer for rendering the challenge image, or `:error`."
+  @spec answer_for(binary(), binary()) :: {:ok, binary()} | :error
+  def answer_for(host, id) do
+    ensure_table()
+
     case :ets.lookup(@table, {host, id}) do
-      [{{_, _}, _}] -> :ets.delete(@table, {host, id}) == true && true
-      [] -> false
+      [{{_, _}, %{answer: answer, created: created}}] ->
+        if System.system_time(:second) - created <= @ttl_seconds,
+          do: {:ok, answer},
+          else: :error
+
+      [] ->
+        :error
+    end
+  end
+
+  @doc "Verify an answer. Single-use: the challenge is deleted on any attempt."
+  @spec verify(binary(), binary(), binary()) :: boolean()
+  def verify(host, id, answer) do
+    ensure_table()
+
+    case :ets.lookup(@table, {host, id}) do
+      [{{_, _}, %{answer: expected, created: created}}] ->
+        :ets.delete(@table, {host, id})
+
+        System.system_time(:second) - created <= @ttl_seconds and
+          String.trim(to_string(answer)) == expected
+
+      [] ->
+        false
     end
   end
 end
@@ -371,6 +448,9 @@ defmodule Exjabberd.Mod.HttpUpload do
               {:error, :too_large} ->
                 {:error, :not_acceptable, Exjabberd.Iq.error_iq(iq, "not-acceptable")}
 
+              {:error, :quota_exceeded} ->
+                {:error, :resource_constraint, Exjabberd.Iq.error_iq(iq, "resource-constraint")}
+
               {:error, :bad_request} ->
                 {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
             end
@@ -418,46 +498,136 @@ defmodule Exjabberd.Mod.HttpUpload do
 end
 
 defmodule Exjabberd.Mod.Last do
-  @moduledoc "`mod_last` (XEP-0012) (partial implementation). Stores last activity."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_last
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
+  @moduledoc """
+  `mod_last` (XEP-0012) Last Activity.
 
-    Exjabberd.Hooks.add(:user_available, "global", __MODULE__, :on_available, 50)
-    Exjabberd.Hooks.add(:user_unavailable, "global", __MODULE__, :on_unavailable, 50)
+  Records when each user was last seen (on disconnect, via the
+  `:user_unavailable` hook) and answers `jabber:iq:last` queries:
+  addressed to the server it reports the server uptime in seconds;
+  addressed to a user it reports the seconds since that user was
+  last online plus their last unavailable status text. A user who
+  is currently online answers with `seconds='0'`.
+  """
+  use Exjabberd.Mod.GenMod
+
+  alias Exjabberd.Xmpp.Jid
+
+  @table :exjabberd_last
+  @ns "jabber:iq:last"
+
+  @impl true
+  def start(host, _opts) do
+    ensure_table()
+    :ets.insert_new(@table, {:boot_time, System.system_time(:second)})
+    Exjabberd.Hooks.add(:user_available, host, __MODULE__, :on_available, 50)
+    Exjabberd.Hooks.add(:user_unavailable, host, __MODULE__, :on_unavailable, 50)
+    Exjabberd.Iq.register(host, @ns, __MODULE__, :handle_iq)
     :ok
   end
 
   @impl true
-  def stop(_host) do
-    Exjabberd.Hooks.delete(:user_available, "global", __MODULE__, :on_available)
-    Exjabberd.Hooks.delete(:user_unavailable, "global", __MODULE__, :on_unavailable)
+  def stop(host) do
+    Exjabberd.Hooks.delete(:user_available, host, __MODULE__, :on_available)
+    Exjabberd.Hooks.delete(:user_unavailable, host, __MODULE__, :on_unavailable)
+    Exjabberd.Iq.unregister(host, @ns, :both)
     :ok
+  end
+
+  defp ensure_table do
+    if :ets.whereis(@table) == :undefined do
+      :ets.new(@table, [:named_table, :public, :set])
+    end
   end
 
   @doc false
   def on_available(jid, _host) do
-    :ets.delete(@table, jid)
+    ensure_table()
+    :ets.delete(@table, bare_of(jid))
     jid
   end
 
   @doc false
   def on_unavailable(jid, _host) do
-    :ets.insert(@table, {jid, System.system_time(:second), "Logged out"})
+    ensure_table()
+
+    case bare_of(jid) do
+      nil -> :ok
+      bare -> :ets.insert(@table, {bare, System.system_time(:second), "Logged out"})
+    end
+
     jid
   end
 
-  @doc "Get last activity."
+  @doc "Get last activity for a bare JID."
   def get(bare_jid) do
+    ensure_table()
+
     case :ets.lookup(@table, bare_jid) do
       [{_, ts, status}] -> {:ok, %{timestamp: ts, status: status}}
       [] -> :error
     end
   end
+
+  @doc "Server uptime in seconds."
+  @spec uptime() :: non_neg_integer()
+  def uptime do
+    ensure_table()
+
+    case :ets.lookup(@table, :boot_time) do
+      [{:boot_time, ts}] -> max(System.system_time(:second) - ts, 0)
+      [] -> 0
+    end
+  end
+
+  @doc "IQ handler for `jabber:iq:last` (XEP-0012)."
+  @spec handle_iq(map(), binary()) :: {:ok, map()} | {:error, term()}
+  def handle_iq(%{type: "get"} = iq, host) do
+    case iq.to do
+      %Jid{local: local, domain: domain} when is_binary(local) and local != "" ->
+        bare = "#{local}@#{domain}"
+
+        cond do
+          Exjabberd.SessionManager.get_sessions(bare, domain) != [] ->
+            {:ok, result(iq, 0, "")}
+
+          true ->
+            case get(bare) do
+              {:ok, %{timestamp: ts, status: status}} ->
+                {:ok, result(iq, max(System.system_time(:second) - ts, 0), status)}
+
+              :error ->
+                {:error, :not_found, Exjabberd.Iq.error_iq(iq, "item-not-found")}
+            end
+        end
+
+      _ ->
+        _ = host
+        {:ok, result(iq, uptime(), "")}
+    end
+  end
+
+  def handle_iq(iq, _host),
+    do: {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+  defp result(iq, seconds, status) do
+    children = if status in [nil, ""], do: [], else: [status]
+
+    %{
+      iq
+      | type: "result",
+        payload: [
+          %{
+            name: "query",
+            attrs: %{"xmlns" => @ns, "seconds" => Integer.to_string(seconds)},
+            children: children
+          }
+        ]
+    }
+  end
+
+  defp bare_of(%Jid{} = jid), do: Jid.bare(jid)
+  defp bare_of(bin) when is_binary(bin), do: bin |> String.split("/") |> hd()
+  defp bare_of(_), do: nil
 end
 
 defmodule Exjabberd.Mod.LegacyAuth do
@@ -519,33 +689,125 @@ defmodule Exjabberd.Mod.OfflinePush do
 end
 
 defmodule Exjabberd.Mod.Private do
-  @moduledoc "`mod_private` (XEP-0049) (partial implementation). Private XML storage."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_private
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
+  @moduledoc """
+  `mod_private` (XEP-0049) Private XML storage.
 
+  Stores arbitrary XML elements per user, keyed by the element's
+  namespace. IQ `jabber:iq:private`: a `set` stores each child element
+  of the `<query/>` under its own namespace (replacing any previous
+  element with that namespace); a `get` returns the stored elements
+  for the requested namespaces verbatim.
+  """
+  use Exjabberd.Mod.GenMod
+
+  alias Exjabberd.Xmpp.{Jid, Stanza}
+
+  @table :exjabberd_private
+  @ns "jabber:iq:private"
+
+  @impl true
+  def start(host, _opts) do
+    ensure_table()
+    Exjabberd.Iq.register(host, @ns, __MODULE__, :handle_iq)
     :ok
   end
 
   @impl true
-  def stop(_host), do: :ok
-  @doc "Set private data."
+  def stop(host) do
+    Exjabberd.Iq.unregister(host, @ns, :both)
+    :ok
+  end
+
+  defp ensure_table do
+    if :ets.whereis(@table) == :undefined do
+      :ets.new(@table, [:named_table, :public, :set])
+    end
+  end
+
+  @doc "Set private data (one element, keyed by its namespace)."
   def set(host, bare_jid, ns, data) do
+    ensure_table()
     :ets.insert(@table, {{host, bare_jid, ns}, data})
     :ok
   end
 
-  @doc "Get private data."
+  @doc "Get private data by namespace."
   def get(host, bare_jid, ns) do
+    ensure_table()
+
     case :ets.lookup(@table, {host, bare_jid, ns}) do
       [{{_, _, _}, d}] -> {:ok, d}
       [] -> :error
     end
   end
+
+  @doc "IQ handler for `jabber:iq:private` (generic wire elements)."
+  @spec handle_iq(map(), binary()) :: {:ok, map()} | {:error, term()}
+  def handle_iq(%{type: "set"} = iq, host) do
+    bare = bare_of(iq.from)
+    query = Stanza.child(iq.payload, "query")
+
+    cond do
+      is_nil(bare) ->
+        {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+      is_nil(query) ->
+        {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+      true ->
+        Enum.each(query.children, fn
+          %{attrs: attrs} = el ->
+            case Map.get(attrs, "xmlns") do
+              ns when is_binary(ns) and ns != "" -> set(host, bare, ns, el)
+              _ -> :ok
+            end
+
+          _ ->
+            :ok
+        end)
+
+        {:ok, %{iq | type: "result", payload: []}}
+    end
+  end
+
+  def handle_iq(%{type: "get"} = iq, host) do
+    bare = bare_of(iq.from)
+    query = Stanza.child(iq.payload, "query")
+
+    if is_nil(bare) or is_nil(query) do
+      {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+    else
+      found =
+        query.children
+        |> Enum.filter(&is_map/1)
+        |> Enum.flat_map(fn el ->
+          case Map.get(el.attrs || %{}, "xmlns") do
+            ns when is_binary(ns) and ns != "" ->
+              case get(host, bare, ns) do
+                {:ok, stored} -> [stored]
+                :error -> []
+              end
+
+            _ ->
+              []
+          end
+        end)
+
+      {:ok,
+       %{
+         iq
+         | type: "result",
+           payload: [%{name: "query", attrs: %{"xmlns" => @ns}, children: found}]
+       }}
+    end
+  end
+
+  def handle_iq(iq, _host),
+    do: {:error, :bad_request, Exjabberd.Iq.error_iq(iq, "bad-request")}
+
+  defp bare_of(%Jid{} = jid), do: Jid.bare(jid)
+  defp bare_of(bin) when is_binary(bin), do: bin |> String.split("/") |> hd()
+  defp bare_of(_), do: nil
 end
 
 defmodule Exjabberd.Mod.Proxy65 do
@@ -935,215 +1197,6 @@ defmodule Exjabberd.Mod.Version do
   end
 
   def handle_iq(iq, _host), do: {:ok, %{iq | type: "result", payload: []}}
-end
-
-defmodule Exjabberd.Mod.Mix do
-  @moduledoc """
-  MIX - XEP-0369 Mediated Information eXchange (partial implementation), best-model, stabil production.
-  Channels are PubSub nodes with MIX semantics: participants, nodes, JID anonymization via PAM.
-  Handles `create/join/leave/send_message/set_nick` like `mod_mix` does via `gen_pubsub_node` + `mod_mix_pam`.
-  Anonymization: `stable_id` per participant (XEP-0369 §5.3), real JID hidden behind `stable_id@channel`.
-  """
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_mix
-  @table_msgs :exjabberd_mix_messages
-  @impl true
-  def start(_host, _opts) do
-    for t <- [@table, @table_msgs] do
-      if :ets.whereis(t) == :undefined do
-        :ets.new(t, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
-      end
-    end
-
-    :ok
-  end
-
-  @impl true
-  def stop(_host), do: :ok
-  @doc "Create MIX channel (like `mod_mix:create` with JID anonymization)."
-  @spec create(binary(), binary(), keyword()) :: :ok | {:error, term()}
-  def create(host, channel, opts \\ []) do
-    if :ets.member(@table, {host, channel}) do
-      {:error, :conflict}
-    else
-      nodes = [
-        "urn:xmpp:mix:nodes:participants",
-        "urn:xmpp:mix:nodes:messages",
-        "urn:xmpp:mix:nodes:presence",
-        "urn:xmpp:mix:nodes:info",
-        "urn:xmpp:mix:nodes:allowed",
-        "urn:xmpp:mix:nodes:banned"
-      ]
-
-      :ets.insert(
-        @table,
-        {{host, channel},
-         %{
-           participants: %{},
-           nodes: nodes,
-           created: System.system_time(:second),
-           owner: Keyword.get(opts, :owner),
-           anonymize: Keyword.get(opts, :anonymize, true)
-         }}
-      )
-
-      for n <- nodes, do: Exjabberd.Mod.PubSub.create_node(host, "#{channel}/#{n}", type: "leaf")
-      :ok
-    end
-  end
-
-  @doc "Join channel with nick (like `mod_mix:join` + PAM `mix_pam` anonymization)."
-  @spec join(binary(), binary(), binary(), binary()) :: :ok | {:error, term()}
-  def join(host, channel, jid, nick \\ "") do
-    case :ets.lookup(@table, {host, channel}) do
-      [] ->
-        {:error, :not_found}
-
-      [{{_, _}, data}] ->
-        jid_nick = if nick == "", do: jid, else: nick
-        stable_id = stable_id(jid, channel)
-        anon_jid = anonymize(jid, channel, stable_id, data.anonymize)
-
-        participants =
-          Map.put(data.participants, jid, %{
-            nick: jid_nick,
-            jid: jid,
-            anon_jid: anon_jid,
-            stable_id: stable_id,
-            joined: System.system_time(:second)
-          })
-
-        :ets.insert(@table, {{host, channel}, %{data | participants: participants}})
-        broadcast_presence(host, channel, anon_jid, "available")
-        :ok
-    end
-  end
-
-  @doc "Leave channel."
-  @spec leave(binary(), binary(), binary()) :: :ok
-  def leave(host, channel, jid) do
-    case :ets.lookup(@table, {host, channel}) do
-      [{{_, _}, data}] ->
-        anon = get_in(data.participants, [jid, :anon_jid]) || jid
-
-        :ets.insert(
-          @table,
-          {{host, channel}, %{data | participants: Map.delete(data.participants, jid)}}
-        )
-
-        broadcast_presence(host, channel, anon, "unavailable")
-        :ok
-
-      [] ->
-        :ok
-    end
-  end
-
-  @doc "Send message to channel (like `mod_mix:send_message` with anonymized from)."
-  @spec send_message(binary(), binary(), binary(), binary()) :: :ok | {:error, term()}
-  def send_message(host, channel, from, body) do
-    case :ets.lookup(@table, {host, channel}) do
-      [] ->
-        {:error, :not_found}
-
-      [{{_, _}, %{participants: parts} = data}] ->
-        from_anon =
-          get_in(parts, [from, :anon_jid]) ||
-            anonymize(from, channel, stable_id(from, channel), data.anonymize)
-
-        ts = System.system_time(:millisecond)
-
-        :ets.insert(
-          @table_msgs,
-          {{host, channel, ts}, %{from: from_anon, real_from: from, body: body, ts: ts}}
-        )
-
-        Enum.each(parts, fn {jid, _} ->
-          stanza =
-            Exjabberd.Xmpp.Stanza.new(:message,
-              type: "groupchat",
-              from: "#{channel}/#{from_anon}",
-              to: jid,
-              payload: [%{body: body, from: from_anon, real_from: from}]
-            )
-
-          Exjabberd.Router.route(stanza)
-        end)
-
-        :ok
-    end
-  end
-
-  @doc "Set nick."
-  @spec set_nick(binary(), binary(), binary(), binary()) :: :ok | {:error, term()}
-  def set_nick(host, channel, jid, nick) do
-    case :ets.lookup(@table, {host, channel}) do
-      [{{_, _}, data}] ->
-        case Map.get(data.participants, jid) do
-          nil ->
-            {:error, :not_found}
-
-          p ->
-            :ets.insert(
-              @table,
-              {{host, channel},
-               %{data | participants: Map.put(data.participants, jid, %{p | nick: nick})}}
-            )
-
-            :ok
-        end
-
-      [] ->
-        {:error, :not_found}
-    end
-  end
-
-  @doc "Get participants with anonymized JIDs (XEP-0369 PAM)."
-  @spec participants(binary(), binary()) :: {:ok, map()} | {:error, term()}
-  def participants(host, channel) do
-    case :ets.lookup(@table, {host, channel}) do
-      [{{_, _}, %{participants: parts}}] -> {:ok, parts}
-      [] -> {:error, :not_found}
-    end
-  end
-
-  @doc "Anonymize JID via stable_id (ejabberd `mod_mix` anonymization)."
-  @spec anonymize(binary(), binary(), binary(), boolean()) :: binary()
-  def anonymize(jid, _channel, stable_id, true) when is_binary(jid) do
-    # Hide real JID behind stable_id — like ejabberd's `jid:encode({stable_id, channel, \"\"})`
-    stable_id
-  end
-
-  def anonymize(jid, _channel, _sid, false), do: jid
-  def anonymize(jid, _channel, _sid, _), do: jid
-
-  @doc "Stable ID (XEP-0369 §5.3) — `hash(jid+channel)` like ejabberd."
-  @spec stable_id(binary(), binary()) :: binary()
-  def stable_id(jid, channel) when is_binary(jid) and is_binary(channel) do
-    :crypto.hash(:sha256, "#{jid}:#{channel}")
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 16)
-  end
-
-  defp broadcast_presence(host, channel, anon_jid, type) do
-    case :ets.lookup(@table, {host, channel}) do
-      [{{_, _}, %{participants: parts}}] ->
-        Enum.each(parts, fn {to_jid, _} ->
-          stanza =
-            Exjabberd.Xmpp.Stanza.new(:presence,
-              from: "#{channel}/#{anon_jid}",
-              to: to_jid,
-              type: type,
-              payload: []
-            )
-
-          Exjabberd.Router.route(stanza)
-        end)
-
-      [] ->
-        :ok
-    end
-  end
 end
 
 defmodule Exjabberd.Mod.HttpApi do

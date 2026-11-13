@@ -1,7 +1,10 @@
 defmodule Exjabberd.Http.Server do
   @moduledoc """
   HTTP listener for the admin web, BOSH, WebSocket, HTTP File Upload
-  and REST API — plain `:gen_tcp`, no external dependency.
+  and REST API — plain `:gen_tcp`, no external dependency. A listen
+  entry with `tls: true` serves the same stack over HTTPS (and
+  `wss://`) on `:ssl` with the server certificate, like ejabberd's
+  5443 listener.
 
   Why stdlib instead of Plug/Bandit: the hard parts here are not
   HTTP parsing but the XMPP session glue — BOSH long-polling and
@@ -37,7 +40,7 @@ defmodule Exjabberd.Http.Server do
   use GenServer
   require Logger
 
-  alias Exjabberd.Http.{Admin, Api, Bosh, Config, Upload, WebSocket}
+  alias Exjabberd.Http.{Admin, Api, Bosh, Captcha, Config, Upload, WebSocket}
 
   @max_headers 65_536
   @max_body 16 * 1024 * 1024
@@ -51,22 +54,46 @@ defmodule Exjabberd.Http.Server do
   def init(opts) do
     port = Keyword.get(opts, :port, 5280)
     host = Keyword.get(opts, :host, "localhost")
+    tls = Keyword.get(opts, :tls, false)
 
-    {:ok, ls} =
-      :gen_tcp.listen(port, [:binary, packet: 0, active: false, reuseaddr: true, backlog: 128])
+    {transport, listen_result} =
+      if tls do
+        {:ok, cert} = Exjabberd.Tls.ensure_cert()
 
-    Logger.info("exjabberd HTTP listening on 0.0.0.0:#{port} (host #{host})")
+        {:ssl,
+         :ssl.listen(
+           port,
+           [:binary, packet: 0, active: false, reuseaddr: true, backlog: 128] ++
+             Exjabberd.Tls.ssl_opts(cert)
+         )}
+      else
+        {:gen_tcp,
+         :gen_tcp.listen(port, [:binary, packet: 0, active: false, reuseaddr: true, backlog: 128])}
+      end
+
+    {:ok, ls} = listen_result
+
+    Logger.info(
+      "exjabberd HTTP#{if tls, do: "S", else: ""} listening on 0.0.0.0:#{port} (host #{host})"
+    )
+
     send(self(), :accept)
     Process.send_after(self(), :sweep, 60_000)
-    {:ok, %{ls: ls, port: port, host: host}}
+    {:ok, %{ls: ls, port: port, host: host, transport: transport}}
   end
 
   @impl true
-  def handle_info(:accept, %{ls: ls} = s) do
-    case :gen_tcp.accept(ls, 1000) do
+  def handle_info(:accept, %{ls: ls, transport: transport} = s) do
+    accepted =
+      case transport do
+        :ssl -> :ssl.transport_accept(ls, 1000)
+        :gen_tcp -> :gen_tcp.accept(ls, 1000)
+      end
+
+    case accepted do
       {:ok, sock} ->
-        pid = spawn(fn -> serve(sock, s.host) end)
-        :ok = :gen_tcp.controlling_process(sock, pid)
+        pid = spawn(fn -> serve(transport, sock, s.host) end)
+        :ok = t_controlling_process(transport, sock, pid)
         send(pid, {:take_socket, sock})
 
       {:error, :timeout} ->
@@ -88,48 +115,78 @@ defmodule Exjabberd.Http.Server do
     {:noreply, s}
   end
 
+  # --- transport helpers: the same code serves plain TCP and TLS ---
+
+  defp t_controlling_process(:gen_tcp, sock, pid), do: :gen_tcp.controlling_process(sock, pid)
+  defp t_controlling_process(:ssl, sock, pid), do: :ssl.controlling_process(sock, pid)
+  defp t_recv(:gen_tcp, sock, timeout), do: :gen_tcp.recv(sock, 0, timeout)
+  defp t_recv(:ssl, sock, timeout), do: :ssl.recv(sock, 0, timeout)
+  defp t_send(:gen_tcp, sock, data), do: :gen_tcp.send(sock, data)
+  defp t_send(:ssl, sock, data), do: :ssl.send(sock, data)
+  defp t_close(:gen_tcp, sock), do: :gen_tcp.close(sock)
+  defp t_close(:ssl, sock), do: :ssl.close(sock)
+  defp t_peername(:gen_tcp, sock), do: :inet.peername(sock)
+  defp t_peername(:ssl, sock), do: :ssl.peername(sock)
+  defp t_setopts(:gen_tcp, sock, opts), do: :inet.setopts(sock, opts)
+  defp t_setopts(:ssl, sock, opts), do: :ssl.setopts(sock, opts)
+
   # --- per-connection ---
 
-  defp serve(sock, host) do
+  defp serve(transport, sock, host) do
     receive do
       {:take_socket, ^sock} -> :ok
     after
       5_000 -> :ok
     end
 
-    :inet.setopts(sock, active: false)
+    # For TLS the handshake happens here, in the owning process.
+    sock =
+      if transport == :ssl do
+        case :ssl.handshake(sock, 15_000) do
+          {:ok, ssl_sock} -> ssl_sock
+          {:error, _} -> nil
+        end
+      else
+        sock
+      end
 
-    case read_request(sock) do
-      {:ok, req} ->
-        handle_connection(sock, host, req)
+    if is_nil(sock) do
+      :ok
+    else
+      t_setopts(transport, sock, active: false)
 
-      {:error, :closed} ->
-        :ok
+      case read_request(transport, sock) do
+        {:ok, req} ->
+          handle_connection(transport, sock, host, req)
 
-      {:error, reason} ->
-        Logger.debug("HTTP read failed: #{inspect(reason)}")
-        :gen_tcp.close(sock)
+        {:error, :closed} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.debug("HTTP read failed: #{inspect(reason)}")
+          t_close(transport, sock)
+      end
     end
   end
 
-  defp handle_connection(sock, host, req) do
+  defp handle_connection(transport, sock, host, req) do
     ws_path = Config.path("ws", "/ws")
 
     if req.path == ws_path and WebSocket.upgrade_request?(req.headers) do
       {status, headers, body} = WebSocket.handshake_response(req.headers)
-      :ok = send_response(sock, status, headers, body)
-      pid = spawn(fn -> WebSocket.serve(sock, host, peer(sock)) end)
-      :ok = :gen_tcp.controlling_process(sock, pid)
+      :ok = send_response(transport, sock, status, headers, body)
+      pid = spawn(fn -> WebSocket.serve(transport, sock, host, peer(transport, sock)) end)
+      :ok = t_controlling_process(transport, sock, pid)
       send(pid, {:take_socket, sock})
     else
       {status, headers, body} = dispatch(req)
-      :ok = send_response(sock, status, headers, body)
-      :gen_tcp.close(sock)
+      :ok = send_response(transport, sock, status, headers, body)
+      t_close(transport, sock)
     end
   end
 
-  defp peer(sock) do
-    case :inet.peername(sock) do
+  defp peer(transport, sock) do
+    case t_peername(transport, sock) do
       {:ok, {ip, port}} -> "#{inspect(ip)}:#{port}"
       _ -> "unknown"
     end
@@ -169,6 +226,13 @@ defmodule Exjabberd.Http.Server do
       path == upload_path or String.starts_with?(path, upload_path <> "/") ->
         Upload.handle_http(req)
 
+      path == Config.path("captcha", "/captcha") or
+          String.starts_with?(path, Config.path("captcha", "/captcha") <> "/") ->
+        Captcha.handle_http(req)
+
+      String.starts_with?(path, "/.well-known/acme-challenge/") ->
+        acme_challenge(path)
+
       path == Config.path("ws", "/ws") ->
         {426, [{"upgrade", "websocket"}], "Use a WebSocket upgrade with subprotocol xmpp"}
 
@@ -179,6 +243,17 @@ defmodule Exjabberd.Http.Server do
     e ->
       Logger.warning("HTTP dispatch failed: #{inspect(e)}\n#{Exception.format_stacktrace()}")
       {500, [{"content-type", "text/plain"}], "Internal server error"}
+  end
+
+  # ACME http-01: the key authorization for a configured token
+  # (http.acme_challenges in exjabberd.yml), 404 for anything else.
+  defp acme_challenge(path) do
+    token = path |> String.split("/") |> List.last()
+
+    case Config.acme_challenge(token) do
+      value when is_binary(value) -> {200, [{"content-type", "text/plain"}], value}
+      _ -> {404, [{"content-type", "text/plain"}], "Unknown challenge token"}
+    end
   end
 
   defp index_page do
@@ -198,12 +273,12 @@ defmodule Exjabberd.Http.Server do
 
   # --- request reading ---
 
-  defp read_request(sock) do
-    case read_until(sock, "\r\n\r\n", @max_headers, "") do
+  defp read_request(transport, sock) do
+    case read_until(transport, sock, "\r\n\r\n", @max_headers, "") do
       {:ok, head, rest} ->
         case parse_head(head) do
           {:ok, method, path, query, headers} ->
-            case read_body(sock, headers, rest) do
+            case read_body(transport, sock, headers, rest) do
               {:ok, body} ->
                 {:ok,
                  %{method: method, path: path, query: query, headers: headers, body: body}}
@@ -221,7 +296,7 @@ defmodule Exjabberd.Http.Server do
     end
   end
 
-  defp read_until(sock, marker, max, acc) do
+  defp read_until(transport, sock, marker, max, acc) do
     if byte_size(acc) > max do
       {:error, :too_large}
     else
@@ -230,8 +305,8 @@ defmodule Exjabberd.Http.Server do
           {:ok, binary_part(acc, 0, idx), binary_part(acc, idx + len, byte_size(acc) - idx - len)}
 
         :nomatch ->
-          case :gen_tcp.recv(sock, 0, 15_000) do
-            {:ok, data} -> read_until(sock, marker, max, acc <> data)
+          case t_recv(transport, sock, 15_000) do
+            {:ok, data} -> read_until(transport, sock, marker, max, acc <> data)
             {:error, :closed} -> {:error, :closed}
             {:error, reason} -> {:error, reason}
           end
@@ -278,10 +353,10 @@ defmodule Exjabberd.Http.Server do
     end)
   end
 
-  defp read_body(sock, headers, rest) do
+  defp read_body(transport, sock, headers, rest) do
     cond do
       Map.get(headers, "transfer-encoding", "") |> String.downcase() |> String.contains?("chunked") ->
-        read_chunked(sock, rest, "")
+        read_chunked(transport, sock, rest, "")
 
       true ->
         length =
@@ -293,27 +368,27 @@ defmodule Exjabberd.Http.Server do
         if length > @max_body do
           {:error, :too_large}
         else
-          read_exact(sock, length, rest)
+          read_exact(transport, sock, length, rest)
         end
     end
   end
 
-  defp read_exact(_sock, 0, rest), do: {:ok, rest}
+  defp read_exact(_transport, _sock, 0, rest), do: {:ok, rest}
 
-  defp read_exact(sock, needed, rest) do
+  defp read_exact(transport, sock, needed, rest) do
     if byte_size(rest) >= needed do
       {:ok, binary_part(rest, 0, needed)}
     else
-      case :gen_tcp.recv(sock, 0, 15_000) do
-        {:ok, data} -> read_exact(sock, needed, rest <> data)
+      case t_recv(transport, sock, 15_000) do
+        {:ok, data} -> read_exact(transport, sock, needed, rest <> data)
         {:error, :closed} -> {:error, :closed}
         {:error, reason} -> {:error, reason}
       end
     end
   end
 
-  defp read_chunked(sock, buf, acc) do
-    case read_line(sock, buf) do
+  defp read_chunked(transport, sock, buf, acc) do
+    case read_line(transport, sock, buf) do
       {:ok, line, rest} ->
         size =
           line |> String.trim() |> String.split(";") |> hd() |> Integer.parse(16) |> elem(0)
@@ -326,9 +401,9 @@ defmodule Exjabberd.Http.Server do
             {:error, :too_large}
 
           true ->
-            case read_exact(sock, size + 2, rest) do
+            case read_exact(transport, sock, size + 2, rest) do
               {:ok, chunk} ->
-                read_chunked(sock, "", acc <> binary_part(chunk, 0, size))
+                read_chunked(transport, sock, "", acc <> binary_part(chunk, 0, size))
 
               {:error, _} = err ->
                 err
@@ -340,16 +415,16 @@ defmodule Exjabberd.Http.Server do
     end
   end
 
-  defp read_line(sock, buf) do
+  defp read_line(transport, sock, buf) do
     case :binary.split(buf, "\r\n") do
       [line, rest] -> {:ok, line, rest}
-      _ -> read_until(sock, "\r\n", @max_headers, buf)
+      _ -> read_until(transport, sock, "\r\n", @max_headers, buf)
     end
   end
 
   # --- response writing ---
 
-  defp send_response(sock, status, headers, body) do
+  defp send_response(transport, sock, status, headers, body) do
     body = body || ""
     reason = reason_phrase(status)
 
@@ -364,7 +439,7 @@ defmodule Exjabberd.Http.Server do
       ["HTTP/1.1 #{status} #{reason}\r\n"] ++
         Enum.map(headers, fn {k, v} -> "#{k}: #{v}\r\n" end) ++ ["\r\n"]
 
-    :gen_tcp.send(sock, IO.iodata_to_binary(head) <> body)
+    t_send(transport, sock, IO.iodata_to_binary(head) <> body)
   end
 
   defp reason_phrase(200), do: "OK"

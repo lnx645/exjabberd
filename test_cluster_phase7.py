@@ -254,6 +254,19 @@ def main():
     log("msg-b-to-a", f"halo dari B {RUN}" in got, got[:400])
 
     # ---- (c) presence across nodes ----
+    # RFC 6121: presence crosses nodes only between subscribed
+    # contacts (ejabberd behaviour) — mutual handshake first. The
+    # subscription updates land in the shared Mnesia roster, so
+    # they are valid on both nodes.
+    andi.send(f"<presence type='subscribe' to='budi@{DOMAIN}'/>")
+    budi.wait_for("subscribe", timeout=10)
+    budi.send(f"<presence type='subscribed' to='andi@{DOMAIN}'/>")
+    andi.wait_for("subscribed", timeout=10)
+    budi.send(f"<presence type='subscribe' to='andi@{DOMAIN}'/>")
+    andi.wait_for("subscribe", timeout=10)
+    andi.send(f"<presence type='subscribed' to='budi@{DOMAIN}'/>")
+    budi.wait_for("subscribed", timeout=10)
+    andi.drain(); budi.drain()
     andi.send("<presence/>")
     got = budi.wait_for("andi@localhost", timeout=10)
     log("presence-a-to-b", "<presence" in got and "andi@localhost" in got, got[:400])

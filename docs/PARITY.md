@@ -1,6 +1,8 @@
 # Parity assessment — exjabberd vs ejabberd
 
-Date: 2026-11-11 (end of Fase 9, the last parity round).
+Date: 2026-11-12 (Fase 10–15 of the 100% round); re-verified and
+extended 2026-11-13 (Fase 16: verify.sh harness fix, room-creation
+race fix, SQL/PostgreSQL auth backend — see Known limitations).
 Method: every item below is judged only from evidence produced in this
 repo — a named probe with a pass count, or `mix test`. "Works" means a
 real client spoke to a real server over the wire; a module that merely
@@ -9,22 +11,24 @@ as verified. Reproduce everything with `./verify.sh`.
 
 ## Verdict
 
-**Not 100%.** On the 64-item checklist below: **34 verified, 9 partial,
-21 not implemented — (34 + 9×0.5) / 64 ≈ 60%.**
+**Not 100%.** On the 64-item checklist below: **52 verified, 6 partial,
+6 not implemented — (52 + 6×0.5) / 64 ≈ 86%.**
 
-That 60% is honest only for this checklist. Against ejabberd's full
+That 85% is honest only for this checklist. Against ejabberd's full
 module catalogue it would be lower: the long tail of ejabberd modules
-(avatar, caps, announce, shared roster, push, proxy65, private
-storage, vCard, last activity, ad-hoc commands, …) is counted here as
-a handful of grouped items, not one item per module, and none of them
-is wire-verified in this repo. The core that a small private server
-actually needs — C2S, SM/Carbons/CSI, MAM, PubSub/PEP, MUC basics,
-S2S dialback, BOSH/WebSocket, upload, Jingle signaling, MQTT 3.1.1,
-clustering, Mnesia + SQLite auth — is real and proven. The gaps are
-the enterprise edges: alternate auth backends, full MUC, MIX,
-MQTT 5.0, OMEMO generations :1/:2, HTTPS listener, and the long tail.
+is counted here as a handful of grouped items, not one item per
+module. The core that a small private server actually needs — C2S,
+SM/Carbons/CSI, MAM, PubSub/PEP with collections and subscription
+authorization, full MUC with admin IQs, MIX core, S2S dialback,
+BOSH/WebSocket, upload with quota, HTTPS + captcha + ACME http-01,
+Jingle signaling, MQTT 3.1.1, clustering,
+Mnesia + SQLite auth, roster subscriptions, privacy/blocking, vCard,
+private storage, last activity, ad-hoc commands — is real and proven.
+The gaps are the enterprise edges: alternate auth backends,
+MQTT 5.0, OMEMO generations :1/:2, S2S EXTERNAL/Bidi, HTTP/2, and the
+remaining grouped long tail (item 64).
 
-## Evidence (all re-run green by `./verify.sh` on 2026-11-11)
+## Evidence (all re-run green by `./verify.sh` on 2026-11-13, Fase 16)
 
 | Proof | Result |
 |---|---|
@@ -43,8 +47,16 @@ MQTT 5.0, OMEMO generations :1/:2, HTTPS listener, and the long tail.
 | `test_mqtt_phase6.py` (paho-mqtt + bridge) | 28/28 |
 | `test_cluster_phase7.py` (two nodes, same domain) | 22/22 |
 | `test_auth_sqlite_phase8.py` (SQLite backend + migration) | 19/19 |
+| `test_longtail_phase10.py` (vCard/private/privacy/blocking/last/adhoc) | 30/30 |
+| `test_subscriptions_phase11.py` (RFC 6121 subscription flows) | 17/17 |
+| `test_starttls_anon_phase11.py` (`starttls_required` + anonymous auth) | 10/10 |
+| `test_muc_admin_phase12.py` (MUC owner/admin IQs, join gates, kick/ban, destroy) | 23/23 |
+| `test_pubsub_extra_phase13.py` (collections + authorize approval) | 16/16 |
+| `test_mix_phase14.py` (MIX channels XEP-0369) | 17/17 |
+| `test_http_edges_phase15.py` (HTTPS, ACME, captcha, upload quota, admin/API rooms+nodes) | 21/21 |
+| `test_auth_sql_phase16.py` (SQL auth vs real PostgreSQL 16.9; own server + own PG) | 19/19 |
 
-Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19 = **286**.
+Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19 = **439**.
 
 ## Checklist
 
@@ -79,19 +91,19 @@ above) · **P** = partial (works, with a named limit) ·
 | 16 | Message Carbons (XEP-0280) | V | SM 36/36 |
 | 17 | Client State Indication (XEP-0352): queue while inactive | V | SM 36/36 |
 
-### MAM / PubSub / MUC / MIX — 4 V, 1 P, 4 N
+### MAM / PubSub / MUC / MIX — 9 V, 0 P, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
 | 18 | MAM (XEP-0313): archive, `with`/`start`/`end`, RSM, prefs | V | MAM/PubSub 47/47 + slix 12/12 |
-| 19 | MAM for MUC room history | V | MAM/PubSub 47/47 — but no room-membership check on query |
+| 19 | MAM for MUC room history | V | MAM/PubSub 47/47; room archives now require occupant/affiliated requester (Fase 12 probe §13) |
 | 20 | PubSub core (XEP-0060): create/delete/subscribe/publish/retract/purge/items/affiliations/owner config | V | MAM/PubSub 47/47 + slix 12/12 |
-| 21 | PubSub collection nodes | N | rejected with `bad-request` |
-| 22 | PubSub `authorize` approval flow | N | subscriptions stay `pending`, no owner approval |
+| 21 | PubSub collection nodes | V | `test_pubsub_extra_phase13.py` 16/16 — create with `pubsub#type`, disco#info type `collection`, leaf membership via `pubsub#collection`, disco#items lists children, items aggregate children, publish to a collection is `forbidden` |
+| 22 | PubSub `authorize` approval flow | V | `test_pubsub_extra_phase13.py` 16/16 — subscribe lands `pending`, owner gets the `subscribe_authorization` form message, non-owner replies ignored, deny → `none` notification + removed, approve → `subscribed` notification + publish events flow; owner IQ set-subscriptions writes state directly |
 | 23 | PEP (XEP-0163): per-user nodes on the bare JID | V | Jingle 25/25 (OMEMO over PEP) |
-| 24 | MUC (XEP-0045) basics: join, presence, groupchat, leave, disco | P | live_c2s ExUnit + raw 18/18; no affiliations/roles, no room config, no passwords, no bans |
-| 25 | MUC admin: affiliations, roles, room configuration, persistent rooms | N | — |
-| 26 | MIX (XEP-0369) | N | module exists as a partial implementation; never verified over the wire |
+| 24 | MUC (XEP-0045) basics: join, presence, groupchat, leave, disco | V | `test_muc_admin_phase12.py` 23/23 — affiliations keyed by bare JID (creator = owner/moderator), roles, subject broadcast, join gates (members-only `registration-required`, password `not-authorized`, ban `forbidden`, nick `conflict`) answered as presence errors |
+| 25 | MUC admin: affiliations, roles, room configuration, persistent rooms | V | `test_muc_admin_phase12.py` 23/23 — muc#owner config form get/set (title, persistent, public, members-only, password, max users), muc#admin affiliation lists + role items with presence updates, kick 307, ban 301, destroy with occupant notification; temporary rooms vanish when empty |
+| 26 | MIX (XEP-0369) | V | `test_mix_phase14.py` 17/17 — service at `mix.<host>` (registered in gen_mod + yml), create/destroy with owner check, join/leave/setnick with stable participant JIDs, participants node retrieval, groupchat reflection with `<mix>` nick/jid, non-participant messages dropped. Limits: no presence/info PubSub nodes, no MAM for channels, no PAM (XEP-0405) |
 
 ### S2S / federation — 3 V, 2 N
 
@@ -103,18 +115,18 @@ above) · **P** = partial (works, with a named limit) ·
 | 30 | SASL EXTERNAL for S2S | N | — |
 | 31 | Bidirectional S2S streams (XEP-0288) | N | one dialback-verified connection per direction |
 
-### HTTP stack — 2 V, 3 P, 3 N
+### HTTP stack — 7 V, 1 P, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
-| 32 | Web admin: login (SCRAM, admin ACL), dashboard, users, sessions | P | HTTP 46/46 — no MUC/PubSub management pages |
-| 33 | REST API: status, user CRUD, sessions (Bearer token) | P | HTTP 46/46 — small surface vs ejabberd's full API |
+| 32 | Web admin: login (SCRAM, admin ACL), dashboard, users, sessions | V | HTTP 46/46 + HTTP-edges 21/21 — rooms page (occupant counts, destroy) and PubSub page (nodes, delete) included |
+| 33 | REST API: status, user CRUD, sessions (Bearer token) | V | HTTP 46/46 + HTTP-edges 21/21 — surface widened with rooms/nodes list + delete; ejabberd's full command set remains larger |
 | 34 | BOSH (XEP-0124 + XEP-0206) | V | HTTP 46/46 |
 | 35 | XMPP over WebSocket (RFC 7395) | V | HTTP 46/46 |
-| 36 | HTTP File Upload (XEP-0363): slots, HMAC URLs, PUT/GET | P | HTTP 46/46 — no per-user quota, no virus scanning |
-| 37 | TLS HTTP listener (HTTPS, 5443) | N | plain HTTP on 5280 only; use a reverse proxy |
-| 38 | Captcha endpoint | N | — |
-| 39 | ACME challenge handling, HTTP/2 | N | — |
+| 36 | HTTP File Upload (XEP-0363): slots, HMAC URLs, PUT/GET | V | HTTP 46/46 + HTTP-edges 21/21 — per-user quota `http.upload_quota` enforced (resource-constraint); virus scanning: ejabberd core has none either |
+| 37 | TLS HTTP listener (HTTPS, 5443) | V | HTTP-edges 21/21: `tls: true` listener serves the full stack on 5443, plain 5280 unaffected |
+| 38 | Captcha endpoint | V | HTTP-edges 21/21: create, PNG image, wrong answer 403, right answer 200, replay 403 (single-use, 300 s TTL) |
+| 39 | ACME challenge handling, HTTP/2 | P | ACME http-01 serving verified (HTTP-edges 21/21: configured token served, unknown 404). HTTP/2 NOT implemented: the listener is a hand-rolled HTTP/1.1 server; an h2/HPACK stack is out of scope here |
 
 ### Media / signaling — 2 V, 3 P, 1 N
 
@@ -143,35 +155,40 @@ above) · **P** = partial (works, with a named limit) ·
 | 50 | Shared Mnesia tables (accounts, roster, offline, MAM, PubSub) | V | cluster 22/22 |
 | 51 | Cluster completeness | P | MUC rooms, vCards, SM resume state and per-host ETS caches stay node-local; two nodes with independent schemas cannot merge live; same resource on two nodes is last-registration-wins |
 
-### Auth backends — 2 V, 1 P, 2 N
+### Auth backends — 3 V, 1 P, 1 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
 | 52 | Mnesia auth (SCRAM-SHA-256 verifiers, survives restart) | V | raw 18/18 + restart proofs |
 | 53 | SQLite auth (same verifier format, migration tool) | V | SQLite 19/19 + 10 ExUnit |
-| 54 | SQL / PostgreSQL / MySQL auth | N | honest stub — no PostgreSQL server exists in this sandbox to verify against |
+| 54 | SQL / PostgreSQL / MySQL auth | P | **PostgreSQL: real backend, wire-verified (Fase 16)** — native PostgreSQL wire-protocol client written for this codebase (`Exjabberd.PgWire`: startup, cleartext/MD5/**SCRAM-SHA-256** auth with server-signature verification, extended query protocol, bytea) + `Exjabberd.Auth.Sql` storing the same SCRAM verifier format as Mnesia/SQLite in a `passwd` table; `test_auth_sql_phase16.py` boots a real PostgreSQL 16.9 (embedded binaries, SCRAM password auth) and proves PLAIN + SCRAM logins, slixmpp login, verifier hygiene (16 B salt / 4096 iters / 32 B keys, never the password), restart persistence, password rotation, remove_user, and Mnesia→SQL migration keeping the password — 19/19. **MySQL: NOT implemented** — no MySQL/MariaDB server exists in this sandbox to verify against, and the backend rejects a non-PostgreSQL `auth_sql.server` config explicitly instead of pretending (`{:error, :unsupported_server}`) |
 | 55 | LDAP / JWT / OAuth / external / PAM auth | N | stubs that return `false` / `not_implemented` |
-| 56 | Anonymous auth | P | "works as before" — not re-probed in Fase 1–9 |
+| 56 | Anonymous auth | V | re-probed Fase 11 (`test_starttls_anon_phase11.py`): with `auth_method: anonymous`, a never-registered user logs in with any password, binds and uses the session — the SASL `ANONYMOUS` mechanism itself is not advertised/implemented |
 
-### Remaining ejabberd surface — 0 V, 0 P, 8 N
+### Remaining ejabberd surface — 7 V, 0 P, 1 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
-| 57 | Roster subscription requests (subscribe/subscribed flows) | N | presence is broadcast to all sessions for now |
-| 58 | `starttls_required` | N | STARTTLS offered but optional; PLAIN/SCRAM work without TLS |
-| 59 | vCard (XEP-0054) | N | partial implementation only, not wire-verified |
-| 60 | Private XML storage (XEP-0049) | N | partial implementation only, not wire-verified |
-| 61 | Privacy lists / blocking (XEP-0016 / XEP-0191) | N | partial implementation only, not wire-verified |
-| 62 | Last activity (XEP-0012) | N | partial implementation only, not wire-verified |
-| 63 | Ad-hoc commands (XEP-0050) | N | partial implementation only, not wire-verified |
+| 57 | Roster subscription requests (subscribe/subscribed flows) | V | Fase 11, `test_subscriptions_phase11.py` 17/17: full RFC 6121 state machine on both roster items (ask/pending-in), presence fan-out only to `from`/`both` contacts, initial-presence replay, unsubscribe/denial flows, server-generated unavailable on disconnect; plain roster sets no longer fabricate `both` |
+| 58 | `starttls_required` | V | Fase 11, `test_starttls_anon_phase11.py`: with `starttls_required: true`, mechanisms are withheld on plaintext, `<starttls>` carries `<required/>`, plaintext auth is rejected with `policy-violation`, and login+bind succeed after the STARTTLS upgrade |
+| 59 | vCard (XEP-0054) | V | Fase 10, `test_longtail_phase10.py`: set/get round-trip incl. nested elements, peer fetch returns the *addressee's* card, empty card for unset users (ETS storage — does not survive restart) |
+| 60 | Private XML storage (XEP-0049) | V | Fase 10, `test_longtail_phase10.py`: set/get per namespace with verbatim element round-trip and per-user isolation (ETS storage) |
+| 61 | Privacy lists / blocking (XEP-0016 / XEP-0191) | V | Fase 10, `test_longtail_phase10.py`: list get/set/delete, `<active/>`/`<default/>`, router-level enforcement (blocked message dropped, blocked IQ answered `service-unavailable`, unblock restores delivery) |
+| 62 | Last activity (XEP-0012) | V | Fase 10, `test_longtail_phase10.py`: server uptime query and per-user seconds-since-logout with status text (also fixed the dead `"global"` hook registration that had prevented recording entirely) |
+| 63 | Ad-hoc commands (XEP-0050) | V | Fase 10, `test_longtail_phase10.py`: disco#items/#info on the commands node, `get-online-users` completes with a jid-multi result, two-step `announce` form flow delivers a headline message to online users |
 | 64 | Long tail: SOCKS5 bytestreams (XEP-0065), Push (XEP-0357), shared roster, avatars (XEP-0084), caps, announce, CAPTCHA, delegation, … | N | partial implementations only, none wire-verified; "39 modules start at boot" means they load, not that they work |
 
 ## Count
 
-- Verified (V): 34 — items 1–20, 23, 27–29, 34–35, 43–44, 46–47, 49–50, 52–53.
-- Partial (P): 9 — items 24, 32–33, 36, 40–42, 51, 56.
-- Not implemented (N): 21 — items 21–22, 25–26, 30–31, 37–39, 45, 48, 54–55, 57–64.
-- Total: 64. Score: (34 + 9 × 0.5) / 64 = 38.5 / 64 ≈ **60%**.
+- Verified (V): 52 — items 1–29, 32–38, 43–44, 46–47, 49–50, 52–53, 56–63.
+- Partial (P): 6 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented).
+- Not implemented (N): 6 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 48 (MQTT 5.0), 55 (LDAP/JWT/OAuth/PAM auth), 64 (grouped long tail).
+- Total: 64. Score: (52 + 6 × 0.5) / 64 = 55 / 64 ≈ **86%**.
+
+(The earlier draft of this section still carried the pre-Fase-10
+counts — 34/9/21 ≈ 60% — long after the checklist rows above it had
+been updated. Corrected 2026-11-13 during re-verification; the
+verdict at the top of this file was already the right one.)
 
 ## Known limitations that are not bugs
 
@@ -207,3 +224,28 @@ above) · **P** = partial (works, with a named limit) ·
   production needs a real certificate and, for S2S, domain verification
   (currently `verify_none`). The dialback verify connection is plain
   TCP, as XEP-0220 allows.
+- **Room-creation race — ROOT-CAUSED AND FIXED (2026-11-13, Fase
+  16):** what first looked like a MAM flake (`test_mam_pubsub.py`
+  failing its room-history check in ~half of runs, always with a
+  correct archive afterwards) was a check-then-act race in
+  `Muc.create_room/3`: two joins hitting a new room at the same
+  moment both saw an empty ETS index, both started a room process,
+  and the second `:ets.insert` silently overwrote the first — the
+  losing room kept its creator as a stranded occupant while the
+  index pointed at the winner, so the loser missed reflections and
+  room MAM answers (traced live with `:dbg`: the loser's handler
+  correctly returned `forbidden` for a room he had "joined"; occupant
+  dumps showed exactly one nick per room, alternating by run,
+  instead of two). The claim is now atomic (`:ets.insert_new`; the
+  loser terminates its duplicate and joins the winner), and MIX
+  channel creation got the same treatment. Evidence after the fix:
+  8/8 two-client join races show both occupants, and
+  `test_mam_pubsub.py` passes 47/47 in four consecutive runs
+  (before: 5 failures in 6 runs on an aged server).
+- **verify.sh harness gap found and fixed (2026-11-13):** the Fase
+  12–14 probes assume a running dev server on 5222, but verify.sh
+  stopped its step-03 server before them, so a from-scratch
+  `./verify.sh` could never pass that block (the Fase 10–15 probes
+  had been run against a manually booted server instead). verify.sh
+  now boots a fresh dev server for that block (step 04c) and the
+  full script passes end-to-end.

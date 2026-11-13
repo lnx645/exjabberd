@@ -379,6 +379,17 @@ defmodule Exjabberd.SmCarbonsCsiTest do
     b = connect()
     login(b, "testbudi", "secret", rb)
 
+    # RFC 6121: budi's presence can only reach andi once andi is
+    # subscribed to it — subscribe + approve, then drain the
+    # handshake stanzas and roster pushes before going inactive.
+    :ok = :gen_tcp.send(a, "<presence type='subscribe' to='testbudi@localhost'/>")
+    _ = recv_until(b, "subscribe")
+    :ok = :gen_tcp.send(b, "<presence type='subscribed' to='testandi@localhost'/>")
+    _ = recv_until(a, "subscribed")
+    Process.sleep(300)
+    _ = recv_any(a, 300)
+    _ = recv_any(b, 300)
+
     :ok = :gen_tcp.send(a, "<inactive xmlns='urn:xmpp:csi:0'/>")
     Process.sleep(500)
 

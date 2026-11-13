@@ -215,6 +215,7 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_blocking" => %{},
       "mod_bosh" => %{},
       "mod_caps" => %{},
+      "mod_captcha" => %{},
       "mod_carboncopy" => %{},
       "mod_client_state" => %{max_queue: 100},
       "mod_configure" => %{},
@@ -224,6 +225,7 @@ defmodule Exjabberd.Mod.Supervisor do
       "mod_http_upload" => %{},
       "mod_last" => %{},
       "mod_mam" => %{default: "always", max_archive_size: 500},
+      "mod_mix" => %{},
       "mod_mqtt" => %{},
       "mod_jingle" => %{},
       "mod_muc" => %{},
@@ -261,6 +263,7 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_blocking"), do: Exjabberd.Mod.Blocking
   def module_for("mod_bosh"), do: Exjabberd.Mod.Bosh
   def module_for("mod_caps"), do: Exjabberd.Mod.Caps
+  def module_for("mod_captcha"), do: Exjabberd.Mod.Captcha
   def module_for("mod_carboncopy"), do: Exjabberd.Mod.Carbons
   def module_for("mod_client_state"), do: Exjabberd.Mod.Csi
   def module_for("mod_configure"), do: Exjabberd.Mod.Configure
@@ -270,6 +273,7 @@ defmodule Exjabberd.Mod.Supervisor do
   def module_for("mod_http_upload"), do: Exjabberd.Mod.HttpUpload
   def module_for("mod_last"), do: Exjabberd.Mod.Last
   def module_for("mod_mam"), do: Exjabberd.Mod.Mam
+  def module_for("mod_mix"), do: Exjabberd.Mod.Mix
   def module_for("mod_mqtt"), do: Exjabberd.Mod.Mqtt
   def module_for("mod_mqtt_bridge"), do: Exjabberd.Mod.MqttBridge
   def module_for("mod_jingle"), do: Exjabberd.Mod.Jingle

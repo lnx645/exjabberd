@@ -432,6 +432,14 @@ defmodule Exjabberd.C2S do
         else: stanza
 
     routed = Exjabberd.Hooks.run_fold(:user_send_packet, state.host, stanza, [state.jid])
+
+    # RFC 6121 subscription stanzas update both users' roster items
+    # (and exchange presence on approval) before being routed on to
+    # the addressee like ejabberd's mod_roster does.
+    if routed.name == :presence do
+      Exjabberd.Mod.Roster.process_subscription_stanza(state.host, routed)
+    end
+
     Exjabberd.Router.route(routed)
     {:noreply, state}
   end
@@ -615,6 +623,15 @@ defmodule Exjabberd.C2S do
   # End a session for real: presence, registrations, SM id, and a
   # last chance for unacknowledged/queued messages via offline storage.
   defp final_teardown(state) do
+    # If this session had announced availability, its contacts get a
+    # server-generated unavailable presence (RFC 6121 §4.5) — unless
+    # the client already sent one (the record is gone then).
+    if state.jid && Exjabberd.Router.presence_recorded?(state.jid) do
+      Exjabberd.Router.route(
+        Exjabberd.Xmpp.Stanza.new(:presence, from: state.jid, type: "unavailable", payload: [])
+      )
+    end
+
     if state.jid, do: Exjabberd.Hooks.run(:user_unavailable, state.host, state.jid)
 
     if state.resource do

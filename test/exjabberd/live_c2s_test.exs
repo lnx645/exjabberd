@@ -214,6 +214,17 @@ defmodule Exjabberd.LiveC2STest do
     login(a, "testandi", "secret", "live3")
     login(b, "testbudi", "secret", "live4")
 
+    # RFC 6121: presence flows only between subscribed contacts —
+    # mutual handshake first (ejabberd behaviour).
+    :ok = :gen_tcp.send(a, "<presence type='subscribe' to='testbudi@localhost'/>")
+    _ = recv_until(b, "subscribe")
+    :ok = :gen_tcp.send(b, "<presence type='subscribed' to='testandi@localhost'/>")
+    _ = recv_until(a, "subscribed")
+    :ok = :gen_tcp.send(b, "<presence type='subscribe' to='testandi@localhost'/>")
+    _ = recv_until(a, "subscribe")
+    :ok = :gen_tcp.send(a, "<presence type='subscribed' to='testbudi@localhost'/>")
+    _ = recv_until(b, "subscribed")
+
     :ok = :gen_tcp.send(a, "<presence/>")
     assert recv_until(b, "presence") =~ "testandi@localhost/live3"
 

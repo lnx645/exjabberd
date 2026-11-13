@@ -300,7 +300,10 @@ def main():
     st, _h, body = http_req("GET", "/api/status", headers={"Authorization": f"Bearer {API_TOKEN}"})
     try:
         status_doc = json.loads(body)
-        ok = st == 200 and status_doc.get("status") == "ok" and status_doc.get("online_sessions") == 0
+        # online_sessions is ambient state (a detached XEP-0198
+        # session from an earlier probe may legitimately still count
+        # as online), so assert the field is a sane integer, not 0.
+        ok = st == 200 and status_doc.get("status") == "ok" and isinstance(status_doc.get("online_sessions"), int)
     except Exception:
         ok = False
     log("api status 200 + fields", ok, f"status={st} body={body[:160]}")

@@ -17,9 +17,9 @@ defmodule Exjabberd.Mod.Mam.Query do
 
   A query addressed to `room@conference.host` reads the room archive
   (written by `Exjabberd.Mod.Mam.archive_muc/5`); anything else reads
-  the requesting user's own archive. MUC queries require no
-  membership check yet — rooms on this server have no membership
-  enforcement either — which the README says plainly.
+  the requesting user's own archive. Room archives are only served
+  to occupants and affiliated users of the room (ejabberd behaves
+  the same way); everyone else gets `forbidden`.
   """
 
   require Logger
@@ -94,6 +94,39 @@ defmodule Exjabberd.Mod.Mam.Query do
 
   defp handle_query(iq, host, query_el) do
     owner = query_owner(iq, host)
+
+    # Room archives are private to the room: the requester must be
+    # an occupant or hold an affiliation in that room.
+    if room_archive?(iq) and not room_member?(host, owner, requester_bare(iq)) do
+      {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
+    else
+      do_handle_query(iq, host, query_el, owner)
+    end
+  end
+
+  defp room_archive?(iq) do
+    case iq.to do
+      %Jid{local: local, domain: "conference." <> _} when is_binary(local) and local != "" ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp room_member?(host, room_jid, bare) do
+    case Exjabberd.Mod.Muc.occupants(host, room_jid) do
+      {:ok, state} ->
+        affiliated = Map.get(state.affiliations, bare) in [:owner, :admin, :member]
+        occupant = Enum.any?(state.occupants, fn {_nick, occ} -> occ.jid == bare end)
+        affiliated or occupant
+
+      _ ->
+        false
+    end
+  end
+
+  defp do_handle_query(iq, host, query_el, owner) do
     queryid = query_el.attrs["queryid"]
     form = Stanza.child(query_el.children, "x")
     rsm = Stanza.child(query_el.children, "set")

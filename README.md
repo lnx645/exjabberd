@@ -23,14 +23,15 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd" mix run --no-halt
 ```
 
 Listens on TCP **5222** (C2S, STARTTLS optional) and, when
-`exjabberd.yml` enables it, **5223** (direct TLS C2S) and **5280**
-(plain HTTP: web admin `/admin`, REST API `/api`, BOSH
+`exjabberd.yml` enables it, **5223** (direct TLS C2S), **5280**
+(HTTP: web admin `/admin`, REST API `/api`, BOSH
 `/bosh` + `/http-bind`, XMPP over WebSocket `/ws`, HTTP File Upload
-`/upload`). The TLS certificate is self-signed for `localhost`,
+`/upload`, captcha `/captcha`) and **5443** (the same HTTP stack
+over TLS — any `exjabberd_http` listener with `tls: true`). The
+TLS certificate is self-signed for `localhost`,
 generated on first use into `priv/ssl/` (gitignored). Production
 deployments must use a real certificate for the server domain
-instead, and put a TLS reverse proxy in front of port 5280 — the
-HTTP listener itself is plain HTTP only.
+instead.
 
 HTTP settings live in the `http:` section of `exjabberd.yml`
 (REST API Bearer token, HMAC secret for upload URLs + admin
@@ -275,15 +276,14 @@ not is in [Not implemented](#not-implemented).
   `a.localhost` ↔ `b.localhost`).
 
   Honest limits of this phase (not bugs, just not built yet):
-  collection nodes are rejected (`bad-request`); `access_model`
-  `authorize` records subscriptions as `pending` but owner approval
-  is not implemented; `presence` / `roster` access models behave
-  like `open` for local users; MUC MAM queries do not check room
-  membership (rooms here have no membership enforcement either);
-  two messages archived within the same millisecond from two
+  `presence` / `roster` access models behave like `open` for local
+  users; two messages archived within the same millisecond from two
   different sessions have no defined cross-process order (the same
   race exists in ejabberd's send/receive hooks) — the probes space
   sends out to keep the expected order deterministic.
+  (Collection nodes and the `authorize` approval flow arrived in
+  Fase 13, MUC room administration and the MAM membership check in
+  Fase 12 — see `docs/PARITY.md`.)
 
 
 * **HTTP stack (port 5280, plain `:gen_tcp`, zero new dependencies)**:
@@ -300,14 +300,33 @@ not is in [Not implemented](#not-implemented).
   loaded modules — all live numbers, cross-checked against the
   REST API), the users page (list / create / delete / reset
   password — a user created in the UI can log in over XMPP, a
-  deleted user cannot, and live sessions are closed on delete)
-  and the sessions page (every online session). No external
-  assets, no placeholder pages.
+  deleted user cannot, and live sessions are closed on delete),
+  the sessions page (every online session), the rooms page (MUC
+  rooms with occupant counts + destroy) and the PubSub page
+  (service nodes with type/owner/subscriber counts + delete).
+  No external assets, no placeholder pages.
 * **REST API (`/api`, Bearer token from `http.api_token`)**:
   `GET /api/status` (version, uptime, hosts, user/session
   counts), user CRUD (`GET/POST /api/users`,
-  `GET/DELETE /api/users/:user`, `POST /api/users/:user/password`)
-  and `GET /api/sessions`; no token or a wrong token → 401.
+  `GET/DELETE /api/users/:user`, `POST /api/users/:user/password`),
+  `GET /api/sessions`, and the MUC/PubSub surface
+  (`GET /api/rooms`, `DELETE /api/rooms/:room`,
+  `GET /api/nodes`, `DELETE /api/nodes/:node`); no token or a
+  wrong token → 401.
+* **HTTPS listener**: any `exjabberd_http` listen entry with
+  `tls: true` serves the whole HTTP stack over TLS (the shipped
+  config adds port 5443 next to plain 5280), using the server's
+  TLS certificate (`Exjabberd.Tls`, self-signed in dev).
+* **Captcha endpoint (`/captcha`)**: `POST /captcha` creates a
+  challenge and returns its id; `GET /captcha/:id` renders the
+  answer as a PNG generated in-process (bitmap font + noise);
+  `POST /captcha/:id` verifies an answer — challenges are
+  single-use (any attempt burns them) and expire after 300 s.
+  The answer is stored server-side only (`mod_captcha`).
+* **ACME http-01**: `GET /.well-known/acme-challenge/:token`
+  serves the key authorization configured under
+  `http.acme_challenges` (filled in by your ACME client during
+  issuance); unknown tokens → 404.
 * **BOSH (XEP-0124 + XEP-0206, `/bosh` + `/http-bind`)**: session
   creation returns `sid` + `wait`/`inactivity`/`polling`/
   `requests`/`hold` + stream features; SASL PLAIN (and SCRAM, via
@@ -328,7 +347,10 @@ not is in [Not implemented](#not-implemented).
   GET downloads byte-identical content (hash-checked); URLs are
   HMAC-signed with an expiry (forged token → 403, unknown slot →
   404, GET before upload → 404, oversize request →
-  `not-acceptable`); files live under `priv/uploads/` (gitignored)
+  `not-acceptable`); a per-user quota (`http.upload_quota`,
+  default 100 MB of live slots) refuses further slot requests
+  with `resource-constraint`; files live under `priv/uploads/`
+  (gitignored)
   as bare slot ids, so the client filename never touches the
   filesystem; expired slots are swept periodically.
 * **Shared XMPP transport** (`Exjabberd.Http.XmppTransport`):
@@ -339,7 +361,9 @@ not is in [Not implemented](#not-implemented).
   `sync/1` barrier so IQ replies reach the HTTP response).
 
   Honest limits of this phase (not bugs, just not built yet):
-  no TLS on the HTTP listener (use a reverse proxy); no HTTP/2;
+  no HTTP/2 (the listener speaks HTTP/1.1); ACME is limited to
+  serving pre-configured http-01 challenges (no built-in ACME
+  client);
   BOSH `hold` is fixed at 1 and only the last 5 responses are
   kept for `rid` replay; Stream Management `<resume/>` across
   BOSH/WebSocket connections is refused (`item-not-found` —
@@ -580,10 +604,15 @@ not is in [Not implemented](#not-implemented).
   SQLite after migration with the same password; plus 10 ExUnit
   tests (`test/exjabberd/auth/sqlite_test.exs`) including
   persistence across a backend restart and the verbatim-verifier
-  round-trip. Honest limits of this phase: PostgreSQL/MySQL are
-  NOT implemented — no PostgreSQL server exists in this sandbox
-  to verify against, so the `:sql` backend stays an honest stub
-  instead of an untested claim; LDAP/JWT/OAuth/external/PAM stay
+  round-trip. Honest limits of this phase: at the time, PostgreSQL/
+  MySQL were NOT implemented (no PostgreSQL server existed in this
+  sandbox then). **Update (Fase 16): PostgreSQL IS implemented and
+  wire-verified** — a native PostgreSQL wire-protocol client
+  (`Exjabberd.PgWire`, incl. SCRAM-SHA-256 database auth) plus
+  `Exjabberd.Auth.Sql` with the same verifier format, proven
+  against a real PostgreSQL 16.9 by `test_auth_sql_phase16.py`
+  (19/19). MySQL is still NOT implemented (no MySQL/MariaDB server
+  exists in this sandbox); LDAP/JWT/OAuth/external/PAM stay
   stubs too; the SQLite backend is single-file (no clustering of
   the auth store itself — a cluster still shares accounts through
   Mnesia, see Fase 7); Mnesia has a pre-existing persistence
@@ -611,23 +640,24 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   quota and no virus scanning; BOSH `hold` is fixed at 1 and only
   the last 5 responses are kept for `rid` replay; Stream Management
   `<resume/>` across BOSH/WebSocket connections is refused.
-* **MIX** (XEP-0369): the module exists as a partial implementation;
-  not verified over the wire.
-* **MUC (beyond basics)**: join / presence / groupchat / leave work,
-  but there are no affiliations/roles, room configuration, room
-  passwords, bans, or persistent-room admin.
-* **PubSub (edges)**: collection nodes are rejected; `authorize`
-  access model records subscriptions as `pending` but owner approval
-  is not implemented; `presence` / `roster` access models behave
-  like `open` for local users.
-* **Auth backends other than Mnesia and SQLite** (SQL/PostgreSQL/
-  MySQL, LDAP, JWT, OAuth, external, PAM): stubs that return
+* **MIX** (XEP-0369): core implemented and wire-verified since
+  Fase 14 (channels, stable participant JIDs, participants node,
+  message reflection); the presence/info PubSub nodes, MIX-MAM and
+  PAM (XEP-0405) are not implemented.
+* **PubSub (edges)**: `presence` / `roster` access models behave
+  like `open` for local users. (Collections and the `authorize`
+  approval flow are implemented and wire-verified since Fase 13;
+  MUC administration since Fase 12.)
+* **Auth backends other than Mnesia, SQLite and SQL/PostgreSQL**
+  (MySQL, LDAP, JWT, OAuth, external, PAM): stubs that return
   `false` / `not_implemented`. (`anonymous` works as before, but was
-  not re-probed in Fase 1–9; SQLite is real since Fase 8, see above.)
-* **Roster subscription requests** (subscribe/subscribed flows):
-  presence is broadcast to all sessions in the cluster for now.
-* `starttls_required`: STARTTLS is offered but optional; PLAIN/SCRAM
-  also work without TLS.
+  not re-probed in Fase 1–9; SQLite is real since Fase 8 and
+  SQL/PostgreSQL since Fase 16, see above.)
+* ~~**Roster subscription requests**~~ — implemented in Fase 11
+  (full RFC 6121 state machine, wire-verified).
+  ~~`starttls_required`~~ — likewise real since Fase 11: a per-host
+  config option that withholds SASL mechanisms on plaintext and
+  rejects plaintext auth with `policy-violation`.
 * **S2S (edges)**: no SASL EXTERNAL, no bidirectional streams
   (XEP-0288); TLS peer verification is off (`verify_none`,
   self-signed dev certificate); the dialback verify connection is

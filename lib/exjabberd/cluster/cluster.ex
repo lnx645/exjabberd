@@ -772,8 +772,10 @@ defmodule Exjabberd.Cluster do
         {:error, :cannot_connect}
 
       :ignored ->
+        # Distribution is not running on this node, so connecting is
+        # impossible — report it as a connection failure, like `false`.
         :ets.delete(@table, peer)
-        {:error, :ignored}
+        {:error, :cannot_connect}
     end
   end
 

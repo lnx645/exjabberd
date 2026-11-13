@@ -3,7 +3,9 @@
 Date: 2026-11-12 (Fase 10–15 of the 100% round); re-verified and
 extended 2026-11-13 (Fase 16: verify.sh harness fix, room-creation
 race fix, SQL/PostgreSQL auth backend — see Known limitations;
-Fase 17: MQTT 5.0; Fase 18: OMEMO generations :1/:2).
+Fase 17: MQTT 5.0; Fase 18: OMEMO generations :1/:2; Fase 19:
+S2S SASL EXTERNAL + bidirectional streams; Fase 20: XEP-0084
+avatars + XEP-0357 push inside the grouped long tail, item 64).
 Method: every item below is judged only from evidence produced in this
 repo — a named probe with a pass count, or `mix test`. "Works" means a
 real client spoke to a real server over the wire; a module that merely
@@ -12,31 +14,37 @@ as verified. Reproduce everything with `./verify.sh`.
 
 ## Verdict
 
-**Not 100%.** On the 64-item checklist below: **54 verified, 7 partial,
-3 not implemented — (54 + 7×0.5) / 64 ≈ 90%.**
+**Not 100%.** On the 64-item checklist below: **56 verified, 8 partial,
+0 not implemented — (56 + 8×0.5) / 64 ≈ 94%.** No row is left at
+"not implemented", but eight rows are partial with named limits —
+that is not the same as full parity, and this file will not call
+it 100%.
 
-That 90% is honest only for this checklist. Against ejabberd's full
+That 93% is honest only for this checklist. Against ejabberd's full
 module catalogue it would be lower: the long tail of ejabberd modules
 is counted here as a handful of grouped items, not one item per
 module. The core that a small private server actually needs — C2S,
 SM/Carbons/CSI, MAM, PubSub/PEP with collections and subscription
-authorization, full MUC with admin IQs, MIX core, S2S dialback,
+authorization, full MUC with admin IQs, MIX core, S2S dialback +
+SASL EXTERNAL + bidirectional streams,
 BOSH/WebSocket, upload with quota, HTTPS + captcha + ACME http-01,
 Jingle signaling, MQTT 3.1.1 and 5.0, OMEMO in all three wire
 generations, clustering, Mnesia + SQLite auth, roster subscriptions,
 privacy/blocking, vCard, private storage, last activity, ad-hoc
 commands — is real and proven.
 The gaps are the enterprise edges: alternate auth backends (MySQL /
-LDAP / PAM), S2S EXTERNAL/Bidi, HTTP/2, and the remaining grouped
-long tail (item 64).
+LDAP / PAM), HTTP/2, and what is left of the grouped long tail
+(item 64: avatars XEP-0084 and push XEP-0357 are wire-verified
+since Fase 20; SOCKS5 bytestreams, shared roster and the rest of
+that group are still not).
 
-## Evidence (all re-run green on 2026-11-13, Fase 18 — every
-`./verify.sh` step executed; the run was split across a sandbox
-restart, each step's own log/count is the evidence)
+## Evidence (all re-run green on 2026-11-13, Fase 20 — one full
+`./verify.sh` run, all 33 steps PASS, exit 0, including the new
+`test_avatar_push_phase20.py` and the Fase 19 S2S probe)
 
 | Proof | Result |
 |---|---|
-| `mix test` (13 ExUnit files) | 140/140, 0 failures |
+| `mix test` (15 ExUnit files) | 151/151, 0 failures |
 | `mix compile` | 0 warnings (warnings are errors) |
 | `audit_raw_test.py` (raw sockets, C2S core) | 18/18 |
 | `audit_slix_test.py` (slixmpp 1.17) | 10/10 |
@@ -62,8 +70,10 @@ restart, each step's own log/count is the evidence)
 | `test_auth_backends_phase16.py` (JWT / OAuth / external auth; own server per backend) | 25/25 |
 | `test_mqtt5_phase17.py` (MQTT 5.0: paho v5 + raw-socket client) | 21/21 |
 | `test_omemo2_phase18.py` (OMEMO :1/:2 over PEP, raw sockets) | 17/17 |
+| `test_s2s_external_bidi_phase19.py` (SASL EXTERNAL + XEP-0288 bidi, two nodes + raw peers) | 20/20 |
+| `test_avatar_push_phase20.py` (XEP-0084 avatars + XEP-0357 push, raw sockets) | 19/19 |
 
-Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25+21+17 = **502**.
+Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25+21+17+20+19 = **541**.
 
 ## Checklist
 
@@ -112,15 +122,15 @@ above) · **P** = partial (works, with a named limit) ·
 | 25 | MUC admin: affiliations, roles, room configuration, persistent rooms | V | `test_muc_admin_phase12.py` 23/23 — muc#owner config form get/set (title, persistent, public, members-only, password, max users), muc#admin affiliation lists + role items with presence updates, kick 307, ban 301, destroy with occupant notification; temporary rooms vanish when empty |
 | 26 | MIX (XEP-0369) | V | `test_mix_phase14.py` 17/17 — service at `mix.<host>` (registered in gen_mod + yml), create/destroy with owner check, join/leave/setnick with stable participant JIDs, participants node retrieval, groupchat reflection with `<mix>` nick/jid, non-participant messages dropped. Limits: no presence/info PubSub nodes, no MAM for channels, no PAM (XEP-0405) |
 
-### S2S / federation — 3 V, 2 N
+### S2S / federation — 5 V, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
 | 27 | Server Dialback (XEP-0220) both directions, forged keys rejected | V | S2S 17/17 |
 | 28 | S2S STARTTLS (TLS 1.2/1.3) | V | S2S 17/17 |
 | 29 | Federated messages / directed presence / IQ (incl. remote disco) | V | S2S 17/17 + slix 4/4 |
-| 30 | SASL EXTERNAL for S2S | N | — |
-| 31 | Bidirectional S2S streams (XEP-0288) | N | one dialback-verified connection per direction |
+| 30 | SASL EXTERNAL for S2S | V | `test_s2s_external_bidi_phase19.py` 20/20 + 5 ExUnit — post-TLS features offer EXTERNAL; the handshake certificate must name the asserted domain (SAN dNSName, CN fallback) and, with `s2s_pinned_certs` configured, be pinned byte-for-byte (`Exjabberd.S2S.External`); success → stream restart → verified without dialback. Wire-proven: node↔node auth (`auth_method: :external`), raw success + stanza routing, unpinned rogue cert rejected, pinned-but-wrong-domain cert rejected, plaintext attempt → `encryption-required`. A refused EXTERNAL leaves the stream open and the outbound side falls back to dialback (ejabberd behaviour). Limit: without a pin file, identity alone decides — the same dev-grade trust as the `verify_none` TLS stance; certificate *chain* validation against a CA is not implemented |
+| 31 | Bidirectional S2S streams (XEP-0288) | V | `test_s2s_external_bidi_phase19.py` 20/20 — `<bidi/>` feature advertised; an authenticated peer's `<bidi/>` request registers its inbound connection as the channel for its domain and the router prefers it: B→A delivered with **zero** outbound connections on B (RPC-verified), an A→B stanza arrives on the single raw connection and not at the real node B, a pre-auth `<bidi/>` registers nothing; the outbound side requests bidi after establishment (dialback or EXTERNAL) and routes reverse-direction stanzas with from-domain validation |
 
 ### HTTP stack — 7 V, 1 P, 0 N
 
@@ -172,7 +182,7 @@ above) · **P** = partial (works, with a named limit) ·
 | 55 | LDAP / JWT / OAuth / external / PAM auth | P | **JWT, OAuth and external are real backends, wire-verified (Fase 16)** by `test_auth_backends_phase16.py` — 25/25: JWT (native HS256 verification, `sub` = username, `exp`/`nbf` enforced, alg=none and wrong-secret tokens rejected), OAuth (RFC 7662 introspection over `:httpc` against a fixture endpoint: active/username/exp enforced, fails closed when the endpoint is down), external (ejabberd extauth length-prefixed stdio protocol against a fixture script: auth/isuser/tryregister/setpass/removeuser all effective on the wire). **LDAP: NOT implemented** — no LDAP server exists in this sandbox to verify a bind/search flow against, so it stays an honest stub. **PAM: NOT implemented** — PAM cannot be exercised meaningfully in this sandbox (no PAM service stack; the sandbox also runs as root), honest stub |
 | 56 | Anonymous auth | V | re-probed Fase 11 (`test_starttls_anon_phase11.py`): with `auth_method: anonymous`, a never-registered user logs in with any password, binds and uses the session — the SASL `ANONYMOUS` mechanism itself is not advertised/implemented |
 
-### Remaining ejabberd surface — 7 V, 0 P, 1 N
+### Remaining ejabberd surface — 7 V, 1 P, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
@@ -183,14 +193,14 @@ above) · **P** = partial (works, with a named limit) ·
 | 61 | Privacy lists / blocking (XEP-0016 / XEP-0191) | V | Fase 10, `test_longtail_phase10.py`: list get/set/delete, `<active/>`/`<default/>`, router-level enforcement (blocked message dropped, blocked IQ answered `service-unavailable`, unblock restores delivery) |
 | 62 | Last activity (XEP-0012) | V | Fase 10, `test_longtail_phase10.py`: server uptime query and per-user seconds-since-logout with status text (also fixed the dead `"global"` hook registration that had prevented recording entirely) |
 | 63 | Ad-hoc commands (XEP-0050) | V | Fase 10, `test_longtail_phase10.py`: disco#items/#info on the commands node, `get-online-users` completes with a jid-multi result, two-step `announce` form flow delivers a headline message to online users |
-| 64 | Long tail: SOCKS5 bytestreams (XEP-0065), Push (XEP-0357), shared roster, avatars (XEP-0084), caps, announce, CAPTCHA, delegation, … | N | partial implementations only, none wire-verified; "39 modules start at boot" means they load, not that they work |
+| 64 | Long tail: SOCKS5 bytestreams (XEP-0065), Push (XEP-0357), shared roster, avatars (XEP-0084), caps, announce, CAPTCHA, delegation, … | P | **Wire-verified (Fase 20, `test_avatar_push_phase20.py` 19/19):** avatars (XEP-0084) — data/metadata PEP nodes auto-created on first publish without publish-options with open access, peer without subscription fetches data + metadata, bare-JID disco advertises `urn:xmpp:avatar:metadata`, PEP notification on republish, empty `<metadata/>` stop item stored, non-owner publish → `forbidden`; push (XEP-0357) — `<enable/>`/`<disable/>` IQs to the server domain, offline chat messages publish a `<notification/>` with the summary form (`message-count` counts waiting messages, `last-message-sender`, `last-message-body`) to the registered pubsub node, malformed enable → `bad-request`, `<no-store/>` hint suppresses. Push limits: registrations are ETS (node-local, lost on restart), offline trigger only (no MUC push, no keepalive), push service proven against this server's own pubsub service, not a third-party app server. **Still not implemented / not wire-verified:** SOCKS5 bytestreams (XEP-0065), shared roster groups, XEP-0115 caps handling beyond relaying client caps, server announce beyond the ad-hoc command (item 63), CAPTCHA beyond the HTTP form (item 39 area), XEP-0355 delegation, and the rest of ejabberd's module catalogue grouped here |
 
 ## Count
 
-- Verified (V): 54 — items 1–29, 32–38, 43–48, 49–50, 52–53, 56–63.
-- Partial (P): 7 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented), 55 (JWT/OAuth/external verified; LDAP + PAM not implemented).
-- Not implemented (N): 3 — items 30–31 (S2S EXTERNAL, Bidi), 64 (grouped long tail).
-- Total: 64. Score: (54 + 7 × 0.5) / 64 = 57.5 / 64 ≈ **90%**.
+- Verified (V): 56 — items 1–38, 43–48, 49–50, 52–53, 56–63.
+- Partial (P): 8 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented), 55 (JWT/OAuth/external verified; LDAP + PAM not implemented), 64 (avatars + push wire-verified; SOCKS5/shared roster/delegation and the rest of the group not).
+- Not implemented (N): 0.
+- Total: 64. Score: (56 + 8 × 0.5) / 64 = 60 / 64 ≈ **94%**.
 
 (The earlier draft of this section still carried the pre-Fase-10
 counts — 34/9/21 ≈ 60% — long after the checklist rows above it had
@@ -207,6 +217,14 @@ verdict at the top of this file was already the right one.)
   exiting) can lose the not-yet-flushed transaction log; a clean stop
   (SIGTERM) keeps accounts. `verify.sh` and the probes stop servers
   with SIGTERM for exactly this reason.
+- **Orphaned test schema (found Fase 20):** if `mnesia_data_test/`
+  loses its table data files but keeps `schema.DAT` (a sandbox cycle
+  did exactly that), every live ExUnit test fails with
+  `not-authorized` on login and boot logs `mnesia add_table_copy
+  passwd: {:combine_error, …}`. The directory is disposable runtime
+  state (gitignored): delete it and the suite recreates it fresh —
+  proven by bisect (pristine tree failed 7/9 the same way; after
+  the cleanup the full suite is 151/151).
 - **Supervisor restart intensity:** stopping the supervised SQLite
   backend repeatedly trips the supervisor (3 restarts in 5 s), so the
   backend exposes `close/0` instead of being stopped.

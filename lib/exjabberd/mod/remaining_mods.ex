@@ -152,36 +152,6 @@ defmodule Exjabberd.Mod.AuthFast do
   end
 end
 
-defmodule Exjabberd.Mod.Avatar do
-  @moduledoc "`mod_avatar` (XEP-0084) (partial implementation)."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_avatar
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
-
-    :ok
-  end
-
-  @impl true
-  def stop(_host), do: :ok
-  @doc "Set avatar."
-  def set(host, bare_jid, hash, data) do
-    :ets.insert(@table, {{host, bare_jid}, %{hash: hash, data: data}})
-    :ok
-  end
-
-  @doc "Get avatar."
-  def get(host, bare_jid) do
-    case :ets.lookup(@table, {host, bare_jid}) do
-      [{{_, _}, v}] -> {:ok, v}
-      [] -> :error
-    end
-  end
-end
-
 defmodule Exjabberd.Mod.BlockStrangers do
   @moduledoc "`mod_block_strangers` (partial implementation). Drops stanzas from non-contacts."
   use Exjabberd.Mod.GenMod
@@ -831,45 +801,6 @@ defmodule Exjabberd.Mod.Proxy65 do
   def activate(sid, initiator, target) do
     :ets.insert(@table, {sid, %{initiator: initiator, target: target, activated: true}})
     :ok
-  end
-end
-
-defmodule Exjabberd.Mod.Push do
-  @moduledoc "`mod_push` (XEP-0357) (partial implementation). Stores push JIDs per user."
-  use Exjabberd.Mod.GenMod
-  @table :exjabberd_push
-  @impl true
-  def start(_host, _opts) do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-    end
-
-    :ok
-  end
-
-  @impl true
-  def stop(_host), do: :ok
-  @doc "Enable push."
-  def enable(host, bare_jid, jid, node) do
-    :ets.insert(@table, {{host, bare_jid}, %{jid: jid, node: node}})
-    :ok
-  end
-
-  @doc "Disable push."
-  def disable(host, bare_jid) do
-    :ets.delete(@table, {host, bare_jid})
-    :ok
-  end
-
-  @doc "Notify push."
-  def notify(host, bare_jid, _stanza) do
-    case :ets.lookup(@table, {host, bare_jid}) do
-      [{{_, _}, %{jid: jid}}] ->
-        Exjabberd.Router.route(%{to: jid, name: :message, type: "headline"})
-
-      [] ->
-        :ok
-    end
   end
 end
 

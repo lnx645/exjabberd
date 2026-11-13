@@ -868,12 +868,10 @@ defmodule Exjabberd.Mod.PubSub do
         {:error, :forbidden, Exjabberd.Iq.error_iq(iq, "forbidden")}
 
       true ->
-        # OMEMO nodes get their spec config unless the client
-        # configures them explicitly (XEP-0384: open/open, 1 item).
-        base =
-          if pep != nil and Exjabberd.Mod.Omemo.omemo_node?(node),
-            do: Exjabberd.Mod.Omemo.node_config(node),
-            else: []
+        # Spec-managed nodes (OMEMO, avatars) get their spec
+        # config unless the client configures them explicitly
+        # (XEP-0384 / XEP-0084: open access and publish models).
+        base = if pep != nil, do: spec_node_config(node) || [], else: []
 
         opts =
           [owner: owner] ++
@@ -985,9 +983,25 @@ defmodule Exjabberd.Mod.PubSub do
 
   # Auto-create a missing PEP node on first publish (XEP-0163 §4):
   # the node configuration comes from the publish-options, else
-  # from the OMEMO spec for OMEMO nodes, else from the PEP
-  # defaults. A missing node in the service context is a plain
-  # `item-not-found` — PubSub does not auto-create there.
+  # from the owning spec for spec-managed nodes (OMEMO XEP-0384,
+  # avatars XEP-0084), else from the PEP defaults. A missing node
+  # in the service context is a plain `item-not-found` — PubSub
+  # does not auto-create there.
+
+  # Configuration a spec mandates for its PEP nodes, or nil when
+  # the node is not spec-managed.
+  defp spec_node_config(node) do
+    cond do
+      Exjabberd.Mod.Omemo.omemo_node?(node) ->
+        Exjabberd.Mod.Omemo.node_config(node)
+
+      Exjabberd.Mod.Avatar.avatar_node?(node) ->
+        Exjabberd.Mod.Avatar.node_config(node)
+
+      true ->
+        nil
+    end
+  end
   defp ensure_pep_node(_host, nil, _node, _pubsub_el), do: :ok
 
   defp ensure_pep_node(host, pep, node, pubsub_el) do
@@ -997,9 +1011,8 @@ defmodule Exjabberd.Mod.PubSub do
       :ok
     else
       base =
-        if Exjabberd.Mod.Omemo.omemo_node?(node),
-          do: Exjabberd.Mod.Omemo.node_config(node),
-          else: [access_model: "presence", publish_model: "publishers"]
+        spec_node_config(node) ||
+          [access_model: "presence", publish_model: "publishers"]
 
       opts = [owner: pep] ++ Keyword.merge(base, publish_options(pubsub_el))
 
@@ -1910,9 +1923,11 @@ defmodule Exjabberd.Mod.Disco do
         when is_binary(local) and local != "" and domain == host ->
           # Disco#info on a local user's bare JID (XEP-0163): the
           # account advertises PubSub + OMEMO (XEP-0384, all three
-          # generations) so contacts know the device list / bundles
-          # can be fetched here.
-          {acc.features ++ Exjabberd.Mod.Omemo.disco_features(), acc.identities}
+          # generations) + avatar metadata (XEP-0084) so contacts
+          # know the device list / bundles / avatar can be fetched
+          # here.
+          {acc.features ++ Exjabberd.Mod.Omemo.disco_features() ++
+             [Exjabberd.Mod.Avatar.disco_feature()], acc.identities}
 
         _ ->
           {acc.features, acc.identities}

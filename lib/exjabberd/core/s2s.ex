@@ -13,6 +13,19 @@ defmodule Exjabberd.S2S do
   Inbound connections live in `Exjabberd.Listener.S2S` (port 5269);
   dialback keys live in `Exjabberd.S2S.Dialback`.
 
+  Authentication of an outbound connection is dialback (XEP-0220)
+  by default; with `s2s_prefer_external: true` the connection first
+  tries SASL EXTERNAL (RFC 6120 §4.8, `Exjabberd.S2S.External`)
+  after STARTTLS and falls back to dialback when the peer refuses.
+
+  Bidirectional streams (XEP-0288): an inbound connection whose
+  peer completed authentication (either method) and sent the
+  `<bidi/>` request registers itself here as a *channel* for its
+  domain (`register_bidi/2`). `route_to_remote/2` prefers a live
+  channel over opening a second, opposite-direction connection —
+  one TCP connection then carries both directions, which is the
+  whole point of the XEP.
+
   Domain resolution (`resolve/1`): configured `s2s_host_overrides`
   first (domain → host/port, for tests and for domains without DNS),
   then the `_xmpp-server._tcp` SRV record, then a plain A/AAAA lookup
@@ -29,7 +42,8 @@ defmodule Exjabberd.S2S do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
-  def init(state), do: {:ok, Map.merge(%{connections: %{}}, Map.new(state))}
+  def init(state),
+    do: {:ok, Map.merge(%{connections: %{}, bidi_channels: %{}}, Map.new(state))}
 
   @doc "Route a stanza to a remote domain via S2S (like `ejabberd_s2s:route`)."
   @spec route_to_remote(binary(), map()) :: :ok
@@ -44,6 +58,21 @@ defmodule Exjabberd.S2S do
   @doc "Live outbound connections with their state, for status/debug."
   @spec connections() :: [map()]
   def connections, do: GenServer.call(__MODULE__, :connections)
+
+  @doc """
+  Register an inbound connection process as the XEP-0288
+  bidirectional channel for `domain` (called by the S2S listener
+  after the peer authenticated and requested bidi). The manager
+  monitors the process; the channel dies with the connection.
+  """
+  @spec register_bidi(binary(), pid()) :: :ok
+  def register_bidi(domain, pid) when is_pid(pid) do
+    GenServer.cast(__MODULE__, {:register_bidi, String.downcase(to_string(domain)), pid})
+  end
+
+  @doc "Live bidirectional channels, for status/debug."
+  @spec bidi_channels() :: [%{domain: binary(), pid: pid()}]
+  def bidi_channels, do: GenServer.call(__MODULE__, :bidi_channels)
 
   @doc "Our local host (first configured host) — the Sender Domain on outbound streams."
   @spec local_host() :: binary()
@@ -86,19 +115,39 @@ defmodule Exjabberd.S2S do
   @impl true
   def handle_cast({:route, domain, stanza}, state) do
     domain = String.downcase(to_string(domain))
-    {pid, state} = ensure_connection(domain, state)
 
-    cond do
-      is_pid(pid) ->
+    case live_bidi_channel(domain, state) do
+      {:ok, pid} ->
+        # XEP-0288: the peer's inbound connection carries this
+        # direction too — no second connection is opened.
         send(pid, {:s2s_route, stanza})
+        {:noreply, state}
 
-      true ->
-        # No outbound connection could be started: bounce the
-        # sender immediately instead of losing the stanza.
-        Exjabberd.Router.route_error(stanza, "remote-server-not-found")
+      :error ->
+        {pid, state} = ensure_connection(domain, state)
+
+        cond do
+          is_pid(pid) ->
+            send(pid, {:s2s_route, stanza})
+
+          true ->
+            # No outbound connection could be started: bounce the
+            # sender immediately instead of losing the stanza.
+            Exjabberd.Router.route_error(stanza, "remote-server-not-found")
+        end
+
+        {:noreply, state}
     end
+  end
 
-    {:noreply, state}
+  def handle_cast({:register_bidi, domain, pid}, state) do
+    if Process.alive?(pid) do
+      Process.monitor(pid)
+      Logger.info("S2S bidi channel registered for #{domain}")
+      {:noreply, put_in(state, [:bidi_channels, domain], pid)}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -125,12 +174,34 @@ defmodule Exjabberd.S2S do
     {:reply, list, state}
   end
 
+  def handle_call(:bidi_channels, _from, state) do
+    list =
+      Enum.map(state.bidi_channels, fn {domain, pid} ->
+        %{domain: domain, pid: pid}
+      end)
+
+    {:reply, list, state}
+  end
+
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     next =
       Map.reject(state.connections, fn {_domain, p} -> p == pid end)
 
-    {:noreply, %{state | connections: next}}
+    channels =
+      Map.reject(state.bidi_channels, fn {_domain, p} -> p == pid end)
+
+    {:noreply, %{state | connections: next, bidi_channels: channels}}
+  end
+
+  defp live_bidi_channel(domain, state) do
+    case Map.get(state.bidi_channels, domain) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: :error
+
+      _ ->
+        :error
+    end
   end
 
   defp ensure_connection(domain, state) do
@@ -199,6 +270,19 @@ defmodule Exjabberd.S2S.Out do
       connect → wait_features → [STARTTLS → wait_features_tls] →
       dialback_wait → established
 
+  With `s2s_prefer_external: true` and the EXTERNAL mechanism
+  offered after STARTTLS, the machine detours instead:
+
+      wait_features_tls → external_wait → (success) →
+      wait_features_external → established
+
+  and a SASL `<failure/>` on that detour falls back to
+  `dialback_wait`. When the peer advertised the XEP-0288 bidi
+  feature, establishment (either path) is followed by a `<bidi/>`
+  request; the connection then also *receives*: stanzas the peer
+  sends back over this same connection are validated against the
+  connection's domain and handed to the router.
+
   Stanzas arriving before `:established` are queued (XEP-0220
   §2.1.1: the initiator MUST NOT send stanzas before authorization)
   and flushed in order once the receiving server answers
@@ -240,7 +324,11 @@ defmodule Exjabberd.S2S.Out do
       tls: false,
       timer: nil,
       fail_condition: nil,
-      stop_timer: nil
+      stop_timer: nil,
+      external_tried: false,
+      auth_method: nil,
+      bidi_offered: false,
+      bidi: false
     }
 
     {:ok, state, {:continue, :connect}}
@@ -274,7 +362,8 @@ defmodule Exjabberd.S2S.Out do
   def handle_call(:status, _from, state) do
     {:reply,
      %{status: state.status, tls: state.tls, queued: length(state.queue),
-       remote_stream_id: state.remote_stream_id}, state}
+       remote_stream_id: state.remote_stream_id,
+       auth_method: state.auth_method, bidi: state.bidi}, state}
   end
 
   @impl true
@@ -393,6 +482,27 @@ defmodule Exjabberd.S2S.Out do
       String.starts_with?(unit, "<proceed") ->
         handle_proceed(state)
 
+      String.starts_with?(unit, "<success") and state.status == :external_wait ->
+        # SASL EXTERNAL succeeded: restart the stream (RFC 6120
+        # §4.8.5); the features of the restarted stream complete
+        # the establishment — no dialback follows.
+        case send_raw(state, Dialback.stream_header(state.local_host, state.domain)) do
+          :ok ->
+            {:ok, %{state | status: :wait_features_external, auth_method: :external, buf: ""}}
+
+          {:error, _reason} ->
+            {:failed, fail(state, :unreachable)}
+        end
+
+      String.starts_with?(unit, "<failure") and state.status == :external_wait ->
+        # EXTERNAL refused (e.g. our certificate is not pinned
+        # there): fall back to dialback, the pre-EXTERNAL default.
+        Logger.warning(
+          "S2S out to #{state.domain}: EXTERNAL refused, falling back to dialback"
+        )
+
+        send_db_result(state)
+
       String.starts_with?(unit, "<failure") ->
         Logger.warning("S2S out to #{state.domain}: remote failure #{String.slice(unit, 0, 120)}")
         {:failed, fail(state, :tls_failed)}
@@ -407,18 +517,57 @@ defmodule Exjabberd.S2S.Out do
       String.starts_with?(unit, "</stream:stream") ->
         {:failed, fail(state, :closed)}
 
+      state.status == :established and state.bidi and
+          (String.starts_with?(unit, "<message") or String.starts_with?(unit, "<presence") or
+             String.starts_with?(unit, "<iq")) ->
+        route_inbound_stanza(unit, state)
+
       true ->
         Logger.debug("S2S out to #{state.domain}: ignoring #{String.slice(unit, 0, 60)}")
         {:ok, state}
     end
   end
 
+  # A stanza arriving over a bidirectional connection: it is a
+  # stanza *from* the peer domain (the reverse direction of this
+  # connection). Only the connection's own domain may speak here —
+  # anything else is dropped, exactly like the inbound listener.
+  defp route_inbound_stanza(unit, state) do
+    case Codec.decode(unit) do
+      {:ok, stanza} ->
+        if from_domain?(stanza.from, state.domain) do
+          Exjabberd.Router.route(stanza)
+        else
+          Logger.warning(
+            "S2S bidi stanza from #{inspect(stanza.from)} on connection for #{state.domain}, dropping"
+          )
+        end
+
+      {:error, _} ->
+        Logger.warning("S2S bidi: malformed stanza from #{state.domain}, dropping")
+    end
+
+    {:ok, state}
+  end
+
+  defp from_domain?(%Exjabberd.Xmpp.Jid{domain: domain}, expected),
+    do: String.downcase(domain) == expected
+
+  defp from_domain?(bin, expected) when is_binary(bin) do
+    case Exjabberd.Xmpp.Jid.parse(bin) do
+      {:ok, %Exjabberd.Xmpp.Jid{domain: domain}} -> String.downcase(domain) == expected
+      _ -> false
+    end
+  end
+
+  defp from_domain?(_, _), do: false
+
   defp handle_stream_open(unit, state) do
     from = attr(unit, "from")
     id = attr(unit, "id")
 
     cond do
-      state.status not in [:wait_features, :wait_features_tls] ->
+      state.status not in [:wait_features, :wait_features_tls, :wait_features_external] ->
         {:ok, state}
 
       from != nil and String.downcase(from) != state.domain ->
@@ -435,31 +584,99 @@ defmodule Exjabberd.S2S.Out do
   end
 
   defp handle_features(unit, state) do
+    state = %{state | bidi_offered: state.bidi_offered or features_has?(unit, "bidi")}
+
     case state.status do
       status when status in [:wait_features, :wait_features_tls] ->
         starttls? = features_has?(unit, "starttls")
         policy = Exjabberd.S2S.starttls_policy()
 
         cond do
-          # Already on TLS (post-upgrade features): never request
-          # STARTTLS again — the server would rightly refuse.
-          state.tls ->
-            send_db_result(state)
-
-          starttls? and policy != :disabled ->
+          # Not on TLS yet and the peer offers it: upgrade first —
+          # EXTERNAL is only ever attempted on the encrypted
+          # stream, and dialback prefers it too.
+          not state.tls and starttls? and policy != :disabled ->
             send_raw(state, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
             {:ok, %{state | status: :tls_proceed}}
 
-          policy == :required ->
+          not state.tls and policy == :required ->
             Logger.warning("S2S out to #{state.domain}: STARTTLS required but not offered")
             {:failed, fail(state, :tls_failed)}
+
+          # On TLS (or TLS not offered/allowed): SASL EXTERNAL
+          # when configured to prefer it and the peer offers the
+          # mechanism; otherwise dialback, as before.
+          state.tls and not state.external_tried and
+            Exjabberd.Config.s2s_prefer_external?() and
+              features_offers_external?(unit) ->
+            case send_raw(
+                   state,
+                   "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='EXTERNAL'>=</auth>"
+                 ) do
+              :ok -> {:ok, %{state | status: :external_wait, external_tried: true}}
+              {:error, _reason} -> {:failed, fail(state, :unreachable)}
+            end
 
           true ->
             send_db_result(state)
         end
 
+      :wait_features_external ->
+        # Features of the post-EXTERNAL restarted stream: the
+        # connection is authorized — establish and flush.
+        Logger.info("S2S out to #{state.domain}: EXTERNAL verified (tls=#{state.tls})")
+        state = cancel_timer(%{state | status: :established})
+        state = maybe_request_bidi(state)
+
+        case flush_queue(state) do
+          {:ok, state2} -> {:ok, state2}
+          {:failed, state2} -> {:failed, state2}
+        end
+
       _ ->
         {:ok, state}
+    end
+  end
+
+  # XEP-0288: when the peer advertised the bidi feature and bidi is
+  # enabled locally, ask to use this connection in both directions.
+  # There is no acknowledgement — the peer simply starts sending.
+  defp maybe_request_bidi(state) do
+    if state.bidi_offered and not state.bidi and Exjabberd.Config.s2s_bidi?() do
+      case send_raw(state, "<bidi xmlns='urn:xmpp:bidi:0'/>") do
+        :ok ->
+          Logger.info("S2S out to #{state.domain}: bidi requested")
+          %{state | bidi: true}
+
+        {:error, reason} ->
+          Logger.warning("S2S out to #{state.domain}: bidi request failed #{inspect(reason)}")
+          state
+      end
+    else
+      state
+    end
+  end
+
+  # Does a <stream:features/> unit offer the SASL EXTERNAL mechanism?
+  defp features_offers_external?(unit) do
+    case Codec.parse_xml(unit) do
+      {:ok, %{children: children}} ->
+        Enum.any?(children, fn
+          %{name: "mechanisms", children: mechanisms} ->
+            Enum.any?(mechanisms, fn
+              %{name: "mechanism", children: texts} ->
+                Enum.any?(texts, &(is_binary(&1) and String.trim(&1) == "EXTERNAL"))
+
+              _ ->
+                false
+            end)
+
+          _ ->
+            false
+        end)
+
+      _ ->
+        false
     end
   end
 
@@ -509,7 +726,8 @@ defmodule Exjabberd.S2S.Out do
         cond do
           type == "valid" and from == state.domain and to == state.local_host ->
             Logger.info("S2S out to #{state.domain}: dialback verified (tls=#{state.tls})")
-            state = cancel_timer(%{state | status: :established})
+            state = cancel_timer(%{state | status: :established, auth_method: :dialback})
+            state = maybe_request_bidi(state)
 
             case flush_queue(state) do
               {:ok, state2} -> {:ok, state2}

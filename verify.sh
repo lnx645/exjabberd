@@ -14,7 +14,8 @@
 #   4b. test_starttls_anon_phase11.py (boots its own server)
 #   4c. a fresh dev server for the probes that assume one on 5222:
 #      test_muc_admin_phase12.py, test_pubsub_extra_phase13.py,
-#      test_mix_phase14.py, test_omemo2_phase18.py; then
+#      test_mix_phase14.py, test_omemo2_phase18.py,
+#      test_avatar_push_phase20.py; then
 #      test_http_edges_phase15.py (boots its own server)
 #   5. two-node S2S (boot_s2s_nodes.sh + test_s2s.py + test_s2s_slix.py)
 #   6. two-node cluster (boot_cluster_nodes.sh + test_cluster_phase7.py)
@@ -220,19 +221,21 @@ run_probe "test_starttls_anon_phase11.py"
 # users over Erlang RPC against the running node), so boot a fresh one
 # for them; the step-03 server was stopped above on purpose (the Fase 8
 # probe needs the port for its own server).
-echo "--- step: 04c-dev-server (single node on 5222, for fase 12-14 + 18 probes) ---"
+echo "--- step: 04c-dev-server (single node on 5222, for fase 12-14 + 18 + 20 probes) ---"
 if start_dev_server; then
   record "04c-dev-server" 0
   run_probe "test_muc_admin_phase12.py"
   run_probe "test_pubsub_extra_phase13.py"
   run_probe "test_mix_phase14.py"
   run_probe "test_omemo2_phase18.py"
+  run_probe "test_avatar_push_phase20.py"
 else
   record "04c-dev-server" 1; tail -30 "$DEV_LOG"; echo "dev server failed to start — see $DEV_LOG"
   record "test_muc_admin_phase12.py" 1
   record "test_pubsub_extra_phase13.py" 1
   record "test_mix_phase14.py" 1
   record "test_omemo2_phase18.py" 1
+  record "test_avatar_push_phase20.py" 1
 fi
 stop_dev_server
 wait_port 5222 0 30 || echo "WARNING: port 5222 still open after stopping the dev server"
@@ -246,6 +249,7 @@ if "$REPO/boot_s2s_nodes.sh" start > "$LOGDIR/05-s2s-nodes.log" 2>&1; then
   record "05-s2s-nodes" 0
   run_probe "test_s2s.py"
   run_probe "test_s2s_slix.py"
+  run_probe "test_s2s_external_bidi_phase19.py"
 else
   record "05-s2s-nodes" 1; tail -20 "$LOGDIR/05-s2s-nodes.log"
 fi

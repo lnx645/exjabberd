@@ -105,6 +105,8 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix test
 | MAM / PubSub | `test/exjabberd/mam_pubsub_test.exs` | 8 |
 | MQTT codec + broker (3.1.1 + 5.0) | `test/exjabberd/mqtt_test.exs` | 31 |
 | S2S dialback | `test/exjabberd/s2s_dialback_test.exs` | 5 |
+| S2S SASL EXTERNAL certs | `test/exjabberd/s2s_external_test.exs` | 5 |
+| Avatar nodes + Push (XEP-0084 / XEP-0357) | `test/exjabberd/avatar_push_test.exs` | 6 |
 | SM / Carbons / CSI | `test/exjabberd/sm_carbons_csi_test.exs` | 9 |
 | STUN / TURN codec | `test/exjabberd/stun_turn_test.exs` | 11 |
 
@@ -118,6 +120,8 @@ The repeatable wire probes at the repo root (all run by
 | `test_sm_carbons_csi.py` | XEP-0198 / 0280 / 0352 | 36/36 |
 | `test_mam_pubsub.py` / `test_mam_pubsub_slix.py` | MAM + PubSub, raw / slixmpp | 47/47, 12/12 |
 | `test_s2s.py` / `test_s2s_slix.py` | S2S dialback, two nodes (boot with `./boot_s2s_nodes.sh start`) | 17/17, 4/4 |
+| `test_s2s_external_bidi_phase19.py` | S2S SASL EXTERNAL + XEP-0288 bidi, two nodes + raw peers (restarts the nodes itself) | 20/20 |
+| `test_avatar_push_phase20.py` | XEP-0084 avatars + XEP-0357 push over PEP/PubSub | 19/19 |
 | `test_http_phase4.py` | admin + REST API + BOSH + WebSocket + upload | 46/46 |
 | `test_jingle_phase5.py` | Jingle + extdisco + OMEMO | 25/25 |
 | `test_stun_turn_phase5.py` | STUN/TURN (TCP live; UDP skips in the sandbox, see below) | 2/2 |
@@ -127,8 +131,8 @@ The repeatable wire probes at the repo root (all run by
 | `test_cluster_phase7.py` | clustering, two nodes (boot with `./boot_cluster_nodes.sh start`) | 22/22 |
 | `test_auth_sqlite_phase8.py` | SQLite auth + migration (boots its own server) | 19/19 |
 
-502 wire-probe checks in total, all passing (the table above lists
-the original suites; Fase 10–18 probes are enumerated in
+541 wire-probe checks in total, all passing (the table above lists
+the original suites; Fase 10–20 probes are enumerated in
 `docs/PARITY.md`). Formatting: a
 `.formatter.exs` exists now (added in Fase 9); the files changed in
 Fase 9 are `mix format`-clean. The rest of the repo predates it and
@@ -147,14 +151,15 @@ probe `test_jingle_phase5.py` 25/25, probe
 `test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
 sandbox — see the Fase 5 limits below), probe
 `test_mqtt_phase6.py` 28/28, probe `test_cluster_phase7.py`
-22/22, probe `test_auth_sqlite_phase8.py` 19/19, and the Fase 10–18
+22/22, probe `test_auth_sqlite_phase8.py` 19/19, and the Fase 10–20
 probes (long tail, subscriptions, MUC admin, PubSub extras, MIX,
-HTTP edges, SQL + JWT/OAuth/external auth, MQTT 5.0, OMEMO :1/:2 —
-counts in `docs/PARITY.md`). `mix test` is
-140/140 green. Run it all yourself with `./verify.sh`
+HTTP edges, SQL + JWT/OAuth/external auth, MQTT 5.0, OMEMO :1/:2,
+S2S EXTERNAL + bidi, avatars + push — counts in
+`docs/PARITY.md`). `mix test` is
+151/151 green. Run it all yourself with `./verify.sh`
 (all steps green). The honest per-area score is in
-[`docs/PARITY.md`](docs/PARITY.md): **≈90% of the 64-item
-checklist (54 verified, 7 partial, 3 not implemented) — not 100%**.
+[`docs/PARITY.md`](docs/PARITY.md): **≈94% of the 64-item
+checklist (56 verified, 8 partial, 0 not implemented) — not 100%**.
 What is verified is listed below; what is
 not is in [Not implemented](#not-implemented).
 
@@ -268,9 +273,26 @@ not is in [Not implemented](#not-implemented).
   stream to a non-default host is bound under that host (before,
   every session was `user@localhost`, which broke federation).
 
+  Since Fase 19, federation has two more authentication/transport
+  shapes. **SASL EXTERNAL (RFC 6120 §4.8)**: on a TLS S2S stream
+  the features offer the EXTERNAL mechanism; the peer
+  authenticates with the certificate from its TLS handshake —
+  it must name the asserted domain (SAN dNSName, CN fallback)
+  and, when `s2s_pinned_certs` points at a PEM file, be pinned
+  there byte-for-byte (`Exjabberd.S2S.External`); `<success/>` +
+  stream restart verifies the connection with no dialback
+  exchange. Outbound connections try EXTERNAL first only with
+  `s2s_prefer_external: true`, and a refusal falls back to
+  dialback on the same stream (a failed attempt does not close
+  it). **Bidirectional streams (XEP-0288)**: the features
+  advertise `<bidi/>`; an authenticated peer's `<bidi/>` request
+  registers its inbound connection as the channel for its
+  domain, the router prefers the channel over opening a second
+  connection, and the outbound side likewise requests bidi
+  after establishment and routes the reverse-direction stanzas
+  it receives (from-domain checked).
+
   Honest limits of this phase (not bugs, just not built yet):
-  no SASL EXTERNAL for S2S and no bidirectional streams (XEP-0288)
-  — federation uses one dialback-verified connection per direction;
   the dialback verify connection is plain TCP (XEP-0220 allows
   verify-only connections without TLS), so a peer with
   `s2s_use_starttls: required` cannot be verified that way; TLS
@@ -467,6 +489,26 @@ not is in [Not implemented](#not-implemented).
   `Exjabberd.Mod.Omemo` in `mod/encryption.ex` (wrong node names
   `urn:xmpp:omemo:0` / `urn:xmpp:omemo:0:devicelist`, and a
   duplicate module definition shadowing the new one) was deleted.
+* **User avatars (XEP-0084, `mod_avatar`) + Push Notifications
+  (XEP-0357, `mod_push`) — Fase 20**: avatars ride the same PEP
+  plumbing as OMEMO: the `urn:xmpp:avatar:data` and
+  `urn:xmpp:avatar:metadata` nodes are auto-created on first
+  publish (no publish-options needed) with open access/publish,
+  so a contact without a presence subscription can fetch an
+  avatar; bare-JID disco#info advertises
+  `urn:xmpp:avatar:metadata`, subscribers get PEP notifications,
+  an empty `<metadata/>` item stops the avatar, and non-owners
+  get `forbidden`. For push, a client registers an app-server
+  pubsub node with `<enable xmlns='urn:xmpp:push:0'/>` to the
+  server domain (`<disable/>` removes it; enable options pass
+  through); when a chat message is about to be stored offline,
+  the server publishes a `<notification/>` item with the
+  XEP-0357 summary form (`message-count` = messages waiting,
+  `last-message-sender`, `last-message-body`) from the user's own
+  bare JID — `<no-store/>` hints suppress it. Registration
+  storage is ETS (node-local, lost on restart); MUC push and
+  keepalive are not implemented. Proof:
+  `test_avatar_push_phase20.py` 19/19.
 * **MQTT v3.1.1 broker (Fase 6, port 1883, `mod_mqtt`)**: real
   `paho-mqtt` clients connect (anonymous when `mqtt.allow_anonymous`
   is true, otherwise the username/password is checked against the
@@ -672,7 +714,7 @@ not is in [Not implemented](#not-implemented).
 Honest list — these were claimed by the old code/config and are not
 there. Do not rely on them until they land. The full per-area table
 with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
-(54 verified / 7 partial / 3 not, ≈90% of the 64-item checklist).
+(56 verified / 8 partial / 0 not, ≈94% of the 64-item checklist).
 
 * **HTTP stack (remaining)**: no HTTP/2 (the listener is a
   hand-rolled HTTP/1.1 server; the TLS listener, captcha endpoint
@@ -700,10 +742,13 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   ~~`starttls_required`~~ — likewise real since Fase 11: a per-host
   config option that withholds SASL mechanisms on plaintext and
   rejects plaintext auth with `policy-violation`.
-* **S2S (edges)**: no SASL EXTERNAL, no bidirectional streams
-  (XEP-0288); TLS peer verification is off (`verify_none`,
-  self-signed dev certificate); the dialback verify connection is
-  plain TCP; multi-host sender selection is not done.
+* **S2S (edges)**: SASL EXTERNAL and bidirectional streams are
+  implemented since Fase 19 (see above); TLS peer *chain*
+  verification is off (`verify_none`, self-signed dev
+  certificate) — EXTERNAL checks certificate identity (+ pinning
+  when configured) instead of a CA chain; the dialback verify
+  connection is plain TCP; multi-host sender selection is not
+  done.
 * **Jingle / media**: signaling only — no media processing, no
   DTLS/SRTP; federated Jingle is routed but the session is only
   tracked on the node that saw the initiate.
@@ -713,8 +758,9 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   in-process only. Run `test_stun_turn_phase5.py` where UDP is
   allowed for the full proof. TURN has no per-user quota beyond the
   global `max_allocations`.
-* **OMEMO generations `:1` / `:2`**: only the legacy generation is
-  implemented and advertised.
+* ~~**OMEMO generations `:1` / `:2`**~~ — implemented and
+  wire-verified since Fase 18 (see the OMEMO bullet above); all
+  three generations are advertised.
 * **MQTT 5.0 (edges)**: the protocol is implemented and
   wire-verified since Fase 17 (see above); what remains is
   enhanced authentication (CONNECT naming an Authentication Method
@@ -727,12 +773,13 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   with the same resource on two nodes is last-registration-wins.
 * **Long-tail modules**: vCard, private XML storage, privacy lists /
   blocking, last activity and ad-hoc commands are implemented and
-  wire-verified since Fase 10. What remains partial and unverified
-  over the wire: SOCKS5 bytestreams (proxy65), Push (XEP-0357),
-  shared roster groups, PEP avatars (XEP-0084), entity
-  capabilities, delegation and the rest of the grouped tail
-  (PARITY item 64). "39 modules start at boot" means
-  they load, not that they work.
+  wire-verified since Fase 10, and PEP avatars (XEP-0084) + Push
+  (XEP-0357) since Fase 20 (push has named limits: ETS
+  registrations, offline trigger only). What remains partial and
+  unverified over the wire: SOCKS5 bytestreams (proxy65), shared
+  roster groups, entity capabilities, delegation and the rest of
+  the grouped tail (PARITY item 64). "39 modules start at boot"
+  means they load, not that they work.
 
 ## Layout
 
@@ -747,11 +794,15 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
 * `lib/exjabberd/listener/c2s_listener.ex` — TCP accept loop, stream
   parser, SASL, STARTTLS, IQ dispatch.
 * `lib/exjabberd/listener/s2s_listener.ex` — inbound S2S accept loop,
-  server streams, STARTTLS, dialback receive/verify, stanza gate.
-* `lib/exjabberd/core/s2s.ex` — S2S manager + outbound connection
-  (connect, STARTTLS, dialback, queue, bounce on failure).
+  server streams, STARTTLS, dialback receive/verify, SASL EXTERNAL,
+  XEP-0288 bidi channels, stanza gate.
+* `lib/exjabberd/core/s2s.ex` — S2S manager (+ bidi channel
+  registry) + outbound connection (connect, STARTTLS, EXTERNAL /
+  dialback auth, bidi, queue, bounce on failure).
 * `lib/exjabberd/core/s2s_dialback.ex` — XEP-0220 key generation /
   verification + the dialback verify connection.
+* `lib/exjabberd/core/s2s_external.ex` — SASL EXTERNAL certificate
+  identity extraction (SAN/CN) + pinning trust decision.
 * `lib/exjabberd/xmpp/stream_parser.ex` — incremental stanza splitter.
 * `lib/exjabberd/auth/scram.ex` — SCRAM-SHA-256 (RFC 5802).
 * `lib/exjabberd/auth/sqlite.ex` — Fase 8 SQLite auth backend
@@ -807,6 +858,15 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
 * `test/exjabberd/omemo_test.exs` — OMEMO node classification /
   auto-create config unit tests; `test_omemo2_phase18.py` — live
   OMEMO :1/:2 probe (raw sockets).
+* `lib/exjabberd/mod/avatar.ex` — XEP-0084 avatar node
+  classification/config over PEP (data + metadata nodes,
+  open/open, persistent); `lib/exjabberd/mod/push.ex` — XEP-0357
+  push: `<enable/>`/`<disable/>` IQ handler, ETS registrations,
+  the `:offline_message` hook (priority 30) publishing
+  `<notification/>` summary forms to the registered pubsub node.
+* `test/exjabberd/avatar_push_test.exs` — avatar + push unit
+  tests; `test_avatar_push_phase20.py` — live avatar + push
+  probe (raw sockets).
 * `lib/exjabberd/mqtt/codec.ex` — MQTT v3.1.1 packet codec
   (fixed header, Remaining Length, all 14 packet types, topic
   validation + `+`/`#` matching).

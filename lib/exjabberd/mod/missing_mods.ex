@@ -403,7 +403,17 @@ defmodule Exjabberd.Mod.RegisterWeb do
 end
 
 defmodule Exjabberd.Mod.S2sBidi do
-  @moduledoc "`mod_s2s_bidi` (XEP-0288) (partial implementation). Bidirectional S2S."
+  @moduledoc """
+  `mod_s2s_bidi` (XEP-0288 Bidirectional S2S Streams).
+
+  Thin lifecycle wrapper, like `mod_s2s_dialback`: the feature
+  itself lives in the connection processes, not in a GenMod —
+  `Exjabberd.Listener.S2S` advertises the `<bidi/>` stream
+  feature and registers verified, bidi-requested connections as
+  channels with `Exjabberd.S2S`, and `Exjabberd.S2S.Out` requests
+  bidi after establishment and routes the reverse-direction
+  stanzas it receives. Controlled by the `s2s_bidi` config flag.
+  """
   use Exjabberd.Mod.GenMod
   @impl true
   def start(_host, _opts), do: :ok

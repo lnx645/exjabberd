@@ -89,6 +89,27 @@ listen:
 
 s2s_use_starttls: optional
 
+## SASL EXTERNAL for S2S (RFC 6120 §4.8, Fase 19): on a TLS S2S
+## stream the server offers the EXTERNAL mechanism; the peer
+## authenticates with the certificate it presented in the TLS
+## handshake — the certificate must name the peer's domain (SAN
+## dNSName, or CN when there is no SAN). When `s2s_pinned_certs`
+## points at a PEM file, the peer certificate must additionally
+## appear in that file byte-for-byte (certificate pinning);
+## without a pin file, certificate identity alone decides, which
+## matches the dev certificate's verify_none TLS stance and is
+## NOT sufficient for the open internet.
+s2s_external: true
+# s2s_pinned_certs: "priv/ssl/pinned-peers.pem"
+## On outbound connections, try SASL EXTERNAL before dialback
+## when the peer offers it (a refusal falls back to dialback).
+s2s_prefer_external: false
+## Bidirectional S2S streams (XEP-0288, Fase 19): one connection
+## carries both directions once the peer is authenticated and
+## asks; the S2S router prefers such a channel over opening a
+## second connection.
+s2s_bidi: true
+
 ## Auth backend (Fase 8) — which store holds the accounts.
 ## `mnesia` (default) keeps the current behaviour: SCRAM-SHA-256
 ## verifier data in the Mnesia `:passwd` table. `sqlite` uses the

@@ -105,6 +105,22 @@ defmodule Exjabberd.Config do
   @spec s2s_host_overrides() :: map()
   def s2s_host_overrides, do: get("global", :s2s_host_overrides, %{})
 
+  @doc "Whether SASL EXTERNAL is offered/accepted for S2S (default true)."
+  @spec s2s_external?() :: boolean()
+  def s2s_external?, do: get("global", :s2s_external, true) != false
+
+  @doc "Whether outbound S2S prefers SASL EXTERNAL over dialback when offered (default false)."
+  @spec s2s_prefer_external?() :: boolean()
+  def s2s_prefer_external?, do: get("global", :s2s_prefer_external, false) == true
+
+  @doc "Whether XEP-0288 bidirectional S2S streams are offered/used (default true)."
+  @spec s2s_bidi?() :: boolean()
+  def s2s_bidi?, do: get("global", :s2s_bidi, true) != false
+
+  @doc "PEM file of pinned peer certificates for SASL EXTERNAL, or nil (identity-only)."
+  @spec s2s_pinned_certs() :: binary() | nil
+  def s2s_pinned_certs, do: get("global", :s2s_pinned_certs, nil)
+
   @doc "Configured auth backend for a host (`auth_method:`, default `:mnesia`)."
   @spec auth_method(host()) :: atom()
   def auth_method(host), do: get(host, :auth_method, :mnesia)
@@ -261,6 +277,10 @@ defmodule Exjabberd.Config do
 
   # `auth_method:` values, as atoms. Anything unknown warns and
   # falls back to `:mnesia`.
+  defp parse_bool(value, _default) when value in [true, "true", "yes", :true], do: true
+  defp parse_bool(value, _default) when value in [false, "false", "no", :false], do: false
+  defp parse_bool(_value, default), do: default
+
   defp parse_auth_method(value) when value in ["mnesia", :mnesia], do: :mnesia
   defp parse_auth_method(value) when value in ["sqlite", :sqlite], do: :sqlite
   defp parse_auth_method(value) when value in ["sql", :sql], do: :sql
@@ -420,6 +440,23 @@ defmodule Exjabberd.Config do
         Map.get(data, "s2s_host_overrides", Map.get(data, :s2s_host_overrides, %{}))
       )
 
+    s2s_external =
+      parse_bool(Map.get(data, "s2s_external", Map.get(data, :s2s_external)), true)
+
+    s2s_prefer_external =
+      parse_bool(
+        Map.get(data, "s2s_prefer_external", Map.get(data, :s2s_prefer_external)),
+        false
+      )
+
+    s2s_bidi = parse_bool(Map.get(data, "s2s_bidi", Map.get(data, :s2s_bidi)), true)
+
+    s2s_pinned_certs =
+      case Map.get(data, "s2s_pinned_certs", Map.get(data, :s2s_pinned_certs)) do
+        path when is_binary(path) and path != "" -> path
+        _ -> nil
+      end
+
     http_config =
       case Map.get(data, "http", Map.get(data, :http, %{})) do
         map when is_map(map) -> map
@@ -563,6 +600,10 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)
+      |> put_in([:global, :s2s_external], s2s_external)
+      |> put_in([:global, :s2s_prefer_external], s2s_prefer_external)
+      |> put_in([:global, :s2s_bidi], s2s_bidi)
+      |> put_in([:global, :s2s_pinned_certs], s2s_pinned_certs)
       |> put_in([:global, :turn], turn_config)
       |> put_in([:global, :turn_shared_secret], turn_shared_secret)
       |> put_in([:global, :mqtt], mqtt_config)

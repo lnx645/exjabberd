@@ -85,6 +85,12 @@ s = s.replace("  - localhost", "  - %s" % domain, 1)
 s = s.replace(
     '# s2s_dialback_secret: "change-me-to-a-long-random-secret"',
     's2s_dialback_secret: "%s"' % secret, 1)
+# Fase 19: SASL EXTERNAL trust = pinning; the bundle itself is
+# assembled by the probe once both nodes have generated their
+# (SAN-carrying) certificates.
+s = s.replace(
+    '# s2s_pinned_certs: "priv/ssl/pinned-peers.pem"',
+    's2s_pinned_certs: "priv/ssl/pinned.pem"', 1)
 commented = (
     "# s2s_host_overrides:\n"
     "#   example.com:\n"
@@ -105,6 +111,10 @@ prepare_copy() {
   cp -a "$REPO/." "$dest/"
   rm -rf "$dest/.git" "$dest/mnesia_data" "$dest/mnesia_data_test" "$dest/mnesia_data_test"*
   rm -f "$dest"/*.log
+  # Drop any stale dev certificate from the repo copy: the node
+  # must generate its own, whose SANs name ITS domain (Fase 19 —
+  # SASL EXTERNAL identity checks rely on that).
+  rm -f "$dest/priv/ssl/cert.pem" "$dest/priv/ssl/key.pem"
 }
 
 wait_port() {

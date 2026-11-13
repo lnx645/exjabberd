@@ -21,16 +21,29 @@ defmodule Exjabberd.Listener.S2S do
     key closes the stream;
   * as Authoritative Server: on `<db:verify/>`, recomputes the key
     from our own secret and answers `type='valid'|'invalid'`;
-  * stanzas are routed only from a dialback-verified connection, and
-    only when their `from` domain matches the verified domain —
-    anything else is dropped (unverified) or refused with a
-    `not-authorized` stream error.
+  * SASL EXTERNAL (RFC 6120 §4.8) as an alternative to dialback:
+    on a TLS stream the features offer the EXTERNAL mechanism; the
+    peer's handshake certificate must name the stream's Sender
+    Domain and be trusted (`Exjabberd.S2S.External` — pinning via
+    `s2s_pinned_certs` when configured). On `<success/>` the peer
+    restarts the stream and the new stream is verified for that
+    domain with no dialback exchange;
+  * bidirectional streams (XEP-0288): the features advertise
+    `<bidi/>`; a verified peer that sends the `<bidi/>` request
+    turns this connection into the channel for its domain
+    (`Exjabberd.S2S.register_bidi/2`), and the serve loop drains
+    `{:s2s_route, stanza}` messages between socket reads and sends
+    them over this same connection;
+  * stanzas are routed only from a verified connection (either
+    authentication method), and only when their `from` domain
+    matches the verified domain — anything else is dropped
+    (unverified) or refused with a `not-authorized` stream error.
   """
 
   use GenServer
   require Logger
 
-  alias Exjabberd.S2S.Dialback
+  alias Exjabberd.S2S.{Dialback, External}
   alias Exjabberd.Xmpp.{Codec, Jid, Stream, StreamParser}
 
   def start_link(opts) do
@@ -92,12 +105,20 @@ defmodule Exjabberd.Listener.S2S do
       stream_id: nil,
       remote_domain: nil,
       verified: nil,
+      external_pending: nil,
+      bidi: false,
       max_size: max_stanza_size()
     })
   end
 
+  # The read loop runs in short slices: between slices it drains
+  # the process mailbox, which is how stanzas routed to this
+  # connection as a XEP-0288 bidi channel get written out (and why
+  # an idle connection no longer dies on the first recv timeout).
   defp loop(state) do
-    case sock_recv(state, 60_000) do
+    state = drain_routes(state)
+
+    case sock_recv(state, 1_000) do
       {:ok, data} ->
         buf = state.buf <> data
 
@@ -119,12 +140,27 @@ defmodule Exjabberd.Listener.S2S do
             cleanup(state)
         end
 
+      {:error, :timeout} ->
+        loop(state)
+
       {:error, :closed} ->
         cleanup(state)
 
       {:error, reason} ->
         Logger.debug("S2S recv #{inspect(reason)}")
         cleanup(state)
+    end
+  end
+
+  # Send every stanza the S2S manager routed to this connection
+  # (bidi channel traffic) before reading again.
+  defp drain_routes(state) do
+    receive do
+      {:s2s_route, stanza} ->
+        sock_send(state, Codec.encode(stanza))
+        drain_routes(state)
+    after
+      0 -> state
     end
   end
 
@@ -170,6 +206,14 @@ defmodule Exjabberd.Listener.S2S do
       String.starts_with?(unit, "<db:verify") ->
         handle_db_verify(unit, state)
 
+      String.starts_with?(unit, "<auth") ->
+        handle_auth(unit, state)
+
+      String.starts_with?(unit, "<bidi") ->
+        if attr(unit, "xmlns") == "urn:xmpp:bidi:0",
+          do: handle_bidi(state),
+          else: {:ok, state}
+
       not state.stream_open ->
         send_stream_error(state, "invalid-namespace", "Stanza before stream open")
         {:closed, state}
@@ -207,9 +251,27 @@ defmodule Exjabberd.Listener.S2S do
         send_stream_error(state, "host-unknown", "Unknown target domain #{to}")
         {:closed, state}
 
+      state.external_pending != nil and
+          String.downcase(from) != state.external_pending ->
+        # The stream restarted after SASL EXTERNAL must belong to
+        # the domain the certificate authenticated — anything else
+        # is a protocol violation, not a new unauthenticated stream.
+        send_stream_error(
+          state,
+          "invalid-from",
+          "Restarted stream does not match the EXTERNAL-authenticated domain"
+        )
+
+        {:closed, state}
+
       true ->
         stream_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
         host = state.host
+
+        # A stream restarted after a successful SASL EXTERNAL is
+        # verified for its domain from the start.
+        verified =
+          if state.external_pending != nil, do: String.downcase(from), else: nil
 
         header =
           "<?xml version='1.0'?><stream:stream xmlns='jabber:server' " <>
@@ -220,11 +282,24 @@ defmodule Exjabberd.Listener.S2S do
         # STARTTLS is only offered before TLS (RFC 6120 §4.7):
         # after the upgrade the feature must disappear, or a
         # peer that re-reads features would request it again.
+        # SASL EXTERNAL is offered on TLS streams that are not
+        # authenticated yet; the bidi feature (XEP-0288) is
+        # advertised always but only honoured after verification.
         features =
           "<stream:features>" <>
             if(state.tls,
               do: "",
               else: "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+            ) <>
+            if(state.tls and verified == nil and Exjabberd.Config.s2s_external?(),
+              do:
+                "<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>" <>
+                  "<mechanism>EXTERNAL</mechanism></mechanisms>",
+              else: ""
+            ) <>
+            if(Exjabberd.Config.s2s_bidi?(),
+              do: "<bidi xmlns='urn:xmpp:features:bidi'/>",
+              else: ""
             ) <>
             "<dialback xmlns='urn:xmpp:features:dialback'/>" <>
             "</stream:features>"
@@ -232,7 +307,14 @@ defmodule Exjabberd.Listener.S2S do
         sock_send(state, header <> features)
 
         {:ok,
-         %{state | stream_open: true, stream_id: stream_id, remote_domain: from, verified: nil}}
+         %{
+           state
+           | stream_open: true,
+             stream_id: stream_id,
+             remote_domain: from,
+             verified: verified,
+             external_pending: nil
+         }}
     end
   end
 
@@ -258,8 +340,10 @@ defmodule Exjabberd.Listener.S2S do
   end
 
   # Server-side TLS handshake, then a fresh stream is expected.
+  # The S2S option set requests (but does not require) a peer
+  # certificate — SASL EXTERNAL authenticates with it.
   defp upgrade_to_tls(sock, cert, state) do
-    case :ssl.handshake(sock, Exjabberd.Tls.ssl_opts(cert), 10_000) do
+    case :ssl.handshake(sock, Exjabberd.Tls.ssl_opts_s2s(cert), 10_000) do
       {:ok, ssl_sock} ->
         loop(%{state | sock: ssl_sock, kind: :ssl, tls: true, buf: "", stream_open: false})
 
@@ -368,6 +452,117 @@ defmodule Exjabberd.Listener.S2S do
         Logger.warning("S2S malformed db:verify, closing")
         send_stream_error(state, "invalid-xml", "Malformed db:verify")
         {:closed, state}
+    end
+  end
+
+  # --- SASL EXTERNAL (RFC 6120 §4.8) ---
+
+  defp handle_auth(unit, state) do
+    with {:ok, %{attrs: attrs, children: children}} <- Codec.parse_xml(unit),
+         "EXTERNAL" <- Map.get(attrs, "mechanism") do
+      cond do
+        not state.tls or state.kind != :ssl ->
+          # EXTERNAL authenticates by the TLS client certificate;
+          # without TLS there is nothing to authenticate with.
+          sasl_failure(state, "encryption-required")
+          {:ok, state}
+
+        state.verified != nil or state.external_pending != nil ->
+          sasl_failure(state, "not-authorized")
+          {:ok, state}
+
+        true ->
+          authzid = decode_authzid(children)
+          domain = String.downcase(to_string(state.remote_domain))
+
+          cond do
+            authzid == :invalid ->
+              sasl_failure(state, "not-authorized")
+              {:closed, state}
+
+            authzid != nil and String.downcase(authzid) != domain ->
+              Logger.warning("S2S EXTERNAL authzid #{authzid} != stream domain #{domain}")
+              sasl_failure(state, "not-authorized")
+              {:closed, state}
+
+            true ->
+              case External.verify_peer(state.sock, domain) do
+                :ok ->
+                  Logger.info("S2S EXTERNAL verified #{domain} (certificate identity)")
+
+                  sock_send(state, "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>")
+
+                  # The peer restarts the stream now; the new
+                  # stream open is verified from the start.
+                  {:ok, %{state | external_pending: domain, stream_open: false, buf: ""}}
+
+                {:error, reason} ->
+                  Logger.warning("S2S EXTERNAL refused for #{domain}: #{inspect(reason)}")
+                  sasl_failure(state, "not-authorized")
+                  {:closed, state}
+              end
+          end
+      end
+    else
+      _ ->
+        sasl_failure(state, "invalid-mechanism")
+        {:ok, state}
+    end
+  end
+
+  # A failed EXTERNAL attempt does NOT close the stream: dialback
+  # stays available on the same connection (that is how ejabberd
+  # behaves, and the outbound side's EXTERNAL->dialback fallback
+  # depends on it). The stream is still unauthenticated — no
+  # stanza is routed until dialback or a later EXTERNAL succeeds.
+  defp sasl_failure(state, condition) do
+    sock_send(
+      state,
+      "<failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>" <>
+        "<#{condition} xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/></failure>"
+    )
+  end
+
+  # The initial response is "=", an empty string, or
+  # base64(authzid). "=" and empty both mean "use the certificate
+  # identity" (RFC 6120 §4.8.3).
+  defp decode_authzid(children) do
+    text =
+      children |> Enum.filter(&is_binary/1) |> Enum.join("") |> String.trim()
+
+    case text do
+      "" ->
+        nil
+
+      "=" ->
+        nil
+
+      b64 ->
+        case Base.decode64(b64) do
+          {:ok, authzid} -> authzid
+          :error -> :invalid
+        end
+    end
+  end
+
+  # --- Bidirectional streams (XEP-0288) ---
+
+  # The <bidi/> request only takes effect on a verified
+  # connection: before authentication it is ignored (the peer may
+  # ask again afterwards), so a pre-auth request can never turn an
+  # unauthenticated connection into a routing channel.
+  defp handle_bidi(state) do
+    cond do
+      state.verified == nil ->
+        Logger.debug("S2S bidi request before authentication from #{state.remote_domain}, ignoring")
+        {:ok, state}
+
+      not Exjabberd.Config.s2s_bidi?() ->
+        {:ok, state}
+
+      true ->
+        Exjabberd.S2S.register_bidi(state.verified, self())
+        {:ok, %{state | bidi: true}}
     end
   end
 

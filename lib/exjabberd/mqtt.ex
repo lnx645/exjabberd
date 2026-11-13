@@ -1,6 +1,6 @@
 defmodule Exjabberd.Mqtt do
   @moduledoc """
-  MQTT v3.1.1 broker (Fase 6) — configuration accessors.
+  MQTT broker (v3.1.1 Fase 6, v5.0 Fase 17) — configuration accessors.
 
   The `mqtt:` section of `exjabberd.yml` (all optional, defaults shown):
 

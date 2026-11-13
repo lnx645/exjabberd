@@ -248,4 +248,303 @@ defmodule Exjabberd.MqttTest do
       :ok = Broker.client_gone(cid, :clean)
     end
   end
+
+  # --- MQTT v5.0 codec --------------------------------------------------
+
+  describe "MQTT v5 codec" do
+    test "CONNECT v5 round-trips with properties and will properties" do
+      packet = %{
+        type: :connect,
+        version: 5,
+        client_id: "v5-client",
+        clean_session: false,
+        keep_alive: 30,
+        username: "andi",
+        password: "secret",
+        will_flag: true,
+        will_topic: "status/v5",
+        will_message: "gone",
+        will_qos: 1,
+        will_retain: true,
+        properties: %{
+          session_expiry_interval: 120,
+          receive_maximum: 10,
+          user_properties: [{"k", "v"}]
+        },
+        will_properties: %{will_delay_interval: 5, content_type: "text/plain"}
+      }
+
+      raw = Codec.encode(packet, 5)
+      assert {:ok, decoded, <<>>} = Codec.decode(raw, 5)
+      assert decoded.version == 5
+      assert decoded.client_id == "v5-client"
+      assert decoded.clean_session == false
+      assert decoded.keep_alive == 30
+      assert decoded.username == "andi"
+      assert decoded.will_topic == "status/v5"
+      assert decoded.properties.session_expiry_interval == 120
+      assert decoded.properties.receive_maximum == 10
+      assert decoded.properties.user_properties == [{"k", "v"}]
+      assert decoded.will_properties.will_delay_interval == 5
+      assert decoded.will_properties.content_type == "text/plain"
+    end
+
+    test "CONNECT v5 rejects a password without a username" do
+      # flags: password set, username clear, clean start.
+      body =
+        <<0, 4>> <>
+          "MQTT" <>
+          <<5, 0x42, 0, 60>> <>
+          <<0>> <> <<0, 1>> <> "x" <> <<0, 1>> <> "p"
+
+      assert {:error, :password_without_username} =
+               Codec.decode(<<0x10, byte_size(body)>> <> body, 5)
+    end
+
+    test "CONNACK v5 round-trips with reason code and properties" do
+      packet = %{
+        type: :connack,
+        session_present: true,
+        reason_code: 0,
+        properties: %{
+          topic_alias_maximum: 16,
+          retain_available: 1,
+          assigned_client_identifier: "exj5-abc"
+        }
+      }
+
+      raw = Codec.encode(packet, 5)
+      assert {:ok, decoded, <<>>} = Codec.decode(raw, 5)
+      assert decoded.session_present == true
+      assert decoded.reason_code == 0
+      assert decoded.properties.topic_alias_maximum == 16
+      assert decoded.properties.assigned_client_identifier == "exj5-abc"
+    end
+
+    test "PUBLISH v5 round-trips with properties incl. subscription identifiers" do
+      packet = %{
+        type: :publish,
+        dup: false,
+        qos: 1,
+        retain: false,
+        topic: "a/b",
+        packet_id: 7,
+        payload: "hello",
+        properties: %{
+          content_type: "text/plain",
+          response_topic: "reply/to",
+          correlation_data: <<1, 2, 3>>,
+          subscription_identifiers: [42, 43],
+          message_expiry_interval: 60,
+          user_properties: [{"trace", "t1"}]
+        }
+      }
+
+      raw = Codec.encode(packet, 5)
+      assert {:ok, ^packet, <<>>} = Codec.decode(raw, 5)
+    end
+
+    test "PUBLISH v5 with an empty topic requires a topic alias" do
+      raw = Codec.encode(%{type: :publish, qos: 0, topic: "", payload: "x", properties: %{}}, 5)
+      assert {:error, :invalid_topic} = Codec.decode(raw, 5)
+
+      aliased = %{
+        type: :publish,
+        dup: false,
+        qos: 0,
+        retain: false,
+        topic: "",
+        packet_id: nil,
+        payload: "x",
+        properties: %{topic_alias: 3}
+      }
+
+      assert {:ok, ^aliased, <<>>} = aliased |> Codec.encode(5) |> Codec.decode(5)
+    end
+
+    test "SUBSCRIBE v5 round-trips with options and a subscription identifier" do
+      packet = %{
+        type: :subscribe,
+        packet_id: 11,
+        properties: %{subscription_identifiers: [9]},
+        topics: [
+          {"a/+", 1, %{no_local: true, retain_as_published: false, retain_handling: 0}},
+          {"b/#", 2, %{no_local: false, retain_as_published: true, retain_handling: 2}}
+        ]
+      }
+
+      raw = Codec.encode(packet, 5)
+      assert {:ok, ^packet, <<>>} = Codec.decode(raw, 5)
+    end
+
+    test "SUBSCRIBE v5 rejects reserved option bits and retain handling 3" do
+      # options byte 0xC1: reserved bits set.
+      body = <<0, 11, 0, 0, 3>> <> "a/b" <> <<0xC1>>
+      raw = <<0x82, byte_size(body)>> <> body
+      assert {:error, :bad_subscription_options} = Codec.decode(raw, 5)
+    end
+
+    test "UNSUBACK v5 carries per-filter reason codes" do
+      packet = %{type: :unsuback, packet_id: 5, properties: %{}, codes: [0, 0x11]}
+      raw = Codec.encode(packet, 5)
+      assert {:ok, decoded, <<>>} = Codec.decode(raw, 5)
+      assert decoded.codes == [0, 0x11]
+    end
+
+    test "DISCONNECT and AUTH v5 round-trip" do
+      disc = %{
+        type: :disconnect,
+        reason_code: 0x04,
+        properties: %{session_expiry_interval: 0}
+      }
+
+      assert {:ok, ^disc, <<>>} = disc |> Codec.encode(5) |> Codec.decode(5)
+
+      auth = %{
+        type: :auth,
+        reason_code: 0x18,
+        properties: %{authentication_method: "SCRAM-SHA-256", authentication_data: "abc"}
+      }
+
+      assert {:ok, ^auth, <<>>} = auth |> Codec.encode(5) |> Codec.decode(5)
+    end
+
+    test "ack packets v5 accept short and long forms" do
+      assert {:ok, %{type: :puback, packet_id: 3}, <<>>} =
+               Codec.decode(<<0x40, 0x02, 0, 3>>, 5)
+
+      long =
+        Codec.encode(%{type: :puback, packet_id: 3, reason_code: 0x10, properties: %{}}, 5)
+
+      assert {:ok, %{type: :puback, packet_id: 3, reason_code: 0x10}, <<>>} =
+               Codec.decode(long, 5)
+    end
+
+    test "unknown or misplaced properties are protocol errors" do
+      # PUBLISH with a CONNECT-only property (session expiry, 0x11).
+      body = <<0, 3>> <> "a/b" <> <<5, 0x11, 0, 0, 0, 9>> <> "x"
+      raw = <<0x30, byte_size(body)>> <> body
+      assert {:error, :property_not_allowed} = Codec.decode(raw, 5)
+    end
+
+    test "shared subscription filters validate and match on the inner filter" do
+      assert Codec.valid_filter?("$share/group/a/+")
+      refute Codec.valid_filter?("$share//a/b")
+      refute Codec.valid_filter?("$share/gro+up/a/b")
+      refute Codec.valid_filter?("$share/group")
+      assert Codec.shared_parts("$share/g/a/b") == {:ok, "g", "a/b"}
+      assert Codec.shared_parts("a/b") == :not_shared
+      assert Codec.matches?("$share/g/sport/+", "sport/tennis")
+      refute Codec.matches?("$share/g/sport/+", "sport/tennis/x")
+    end
+
+    test "wildcard filters never match $-topics" do
+      refute Codec.matches?("#", "$SYS/broker/uptime")
+      refute Codec.matches?("+/broker", "$SYS/broker")
+      assert Codec.matches?("$SYS/#", "$SYS/broker/uptime")
+    end
+  end
+
+  # --- broker v5 behaviour ------------------------------------------------
+
+  describe "broker v5 behaviour" do
+    test "shared subscription delivers one copy per group, split across members" do
+      parent = self()
+      uniq = System.unique_integer([:positive])
+      topic = "ut5/shared/#{uniq}"
+
+      members =
+        for i <- 1..2 do
+          cid = "ut5-sh-#{i}-#{uniq}"
+
+          pid =
+            spawn(fn ->
+              {:ok, false} = Broker.register(cid, self(), true)
+              [1] = Broker.subscribe(cid, self(), [{"$share/g1/#{topic}", 1}])
+              send(parent, {:ready, cid})
+
+              collect = fn collect, acc ->
+                receive do
+                  {:mqtt_publish, %{payload: p}} -> collect.(collect, [p | acc])
+                  :report -> send(parent, {:got, cid, Enum.reverse(acc)})
+                end
+              end
+
+              collect.(collect, [])
+            end)
+
+          {cid, pid}
+        end
+
+      assert_receive {:ready, _}, 1000
+      assert_receive {:ready, _}, 1000
+      :ok = Broker.publish(topic, "m1", 1, false)
+      :ok = Broker.publish(topic, "m2", 1, false)
+      :ok = Broker.publish(topic, "m3", 1, false)
+      :ok = Broker.publish(topic, "m4", 1, false)
+
+      for {_cid, pid} <- members, do: send(pid, :report)
+      got = for _ <- members, do: (assert_receive {:got, _cid, payloads}, 1000; payloads)
+      all = List.flatten(got)
+      assert Enum.sort(all) == ["m1", "m2", "m3", "m4"]
+      assert Enum.all?(got, &(length(&1) >= 1))
+
+      for {cid, _pid} <- members, do: :ok = Broker.client_gone(cid, :clean)
+    end
+
+    test "no-local subscriptions skip the publisher's own messages" do
+      cid = "ut5-nl-#{System.unique_integer([:positive])}"
+      assert {:ok, false} = Broker.register(cid, self(), true)
+
+      assert [1] =
+               Broker.subscribe(cid, self(), [
+                 {"ut5/nolocal", 1, %{no_local: true, retain_as_published: false, retain_handling: 0}}
+               ])
+
+      :ok = Broker.publish("ut5/nolocal", "own", 1, false, from_client: cid)
+      refute_receive {:mqtt_publish, _}, 200
+
+      :ok = Broker.publish("ut5/nolocal", "other", 1, false, from_client: "someone-else")
+      assert_receive {:mqtt_publish, %{payload: "other"}}, 1000
+
+      :ok = Broker.client_gone(cid, :clean)
+    end
+
+    test "session expiry 0 drops the session, a parked will fires at session end" do
+      uniq = System.unique_integer([:positive])
+      will_topic = "ut5/will/#{uniq}"
+      watcher = "ut5-watch-#{uniq}"
+      assert {:ok, false} = Broker.register(watcher, self(), true)
+      assert [0] = Broker.subscribe(watcher, self(), [{will_topic, 0}])
+
+      cid = "ut5-exp-#{uniq}"
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          {:ok, false} =
+            Broker.register(cid, self(), false,
+              session_expiry: 0,
+              will: %{topic: will_topic, payload: "bye", qos: 0, retain: false, delay: 30}
+            )
+
+          [0] = Broker.subscribe(cid, self(), [{"ut5/exp/topic", 0}])
+          send(parent, :registered)
+
+          receive do
+            :die -> :ok = Broker.client_gone(cid, :abnormal, from_pid: self())
+          end
+        end)
+
+      assert_receive :registered, 1000
+      send(pid, :die)
+      # delay 30 would park the will, but the session ends at once
+      # (expiry 0) — so the will is published immediately.
+      assert_receive {:mqtt_publish, %{topic: ^will_topic, payload: "bye"}}, 2000
+      # and the session is gone entirely.
+      assert {:ok, false} = Broker.register(cid, self(), false)
+      :ok = Broker.client_gone(cid, :clean)
+      :ok = Broker.client_gone(watcher, :clean)
+    end
+  end
 end

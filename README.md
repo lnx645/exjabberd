@@ -102,7 +102,7 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix test
 | Jingle / OMEMO / STUN / TURN | `test/exjabberd/jingle_omemo_test.exs` | 11 |
 | Live C2S | `test/exjabberd/live_c2s_test.exs` | 12 |
 | MAM / PubSub | `test/exjabberd/mam_pubsub_test.exs` | 8 |
-| MQTT codec + broker | `test/exjabberd/mqtt_test.exs` | 15 |
+| MQTT codec + broker (3.1.1 + 5.0) | `test/exjabberd/mqtt_test.exs` | 31 |
 | S2S dialback | `test/exjabberd/s2s_dialback_test.exs` | 5 |
 | SM / Carbons / CSI | `test/exjabberd/sm_carbons_csi_test.exs` | 9 |
 | STUN / TURN codec | `test/exjabberd/stun_turn_test.exs` | 11 |
@@ -121,10 +121,13 @@ The repeatable wire probes at the repo root (all run by
 | `test_jingle_phase5.py` | Jingle + extdisco + OMEMO | 25/25 |
 | `test_stun_turn_phase5.py` | STUN/TURN (TCP live; UDP skips in the sandbox, see below) | 2/2 |
 | `test_mqtt_phase6.py` | MQTT 3.1.1 + PubSub bridge | 28/28 |
+| `test_mqtt5_phase17.py` | MQTT 5.0 (properties, session expiry, shared subs, aliases) | 21/21 |
 | `test_cluster_phase7.py` | clustering, two nodes (boot with `./boot_cluster_nodes.sh start`) | 22/22 |
 | `test_auth_sqlite_phase8.py` | SQLite auth + migration (boots its own server) | 19/19 |
 
-286 wire-probe checks in total, all passing. Formatting: a
+485 wire-probe checks in total, all passing (the table above lists
+the original suites; Fase 10–17 probes are enumerated in
+`docs/PARITY.md`). Formatting: a
 `.formatter.exs` exists now (added in Fase 9); the files changed in
 Fase 9 are `mix format`-clean. The rest of the repo predates it and
 is deliberately NOT reformatted in one sweep — a repo-wide
@@ -142,11 +145,15 @@ probe `test_jingle_phase5.py` 25/25, probe
 `test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
 sandbox — see the Fase 5 limits below), probe
 `test_mqtt_phase6.py` 28/28, probe `test_cluster_phase7.py`
-22/22, probe `test_auth_sqlite_phase8.py` 19/19. `mix test` is
-119/119 green. Run it all yourself with `./verify.sh`
-(19/19 steps green). The honest per-area score is in
-[`docs/PARITY.md`](docs/PARITY.md): **≈60% of the 64-item
-checklist — not 100%**. What is verified is listed below; what is
+22/22, probe `test_auth_sqlite_phase8.py` 19/19, and the Fase 10–17
+probes (long tail, subscriptions, MUC admin, PubSub extras, MIX,
+HTTP edges, SQL + JWT/OAuth/external auth, MQTT 5.0 — counts in
+`docs/PARITY.md`). `mix test` is
+135/135 green. Run it all yourself with `./verify.sh`
+(30/30 steps green). The honest per-area score is in
+[`docs/PARITY.md`](docs/PARITY.md): **≈88% of the 64-item
+checklist (53 verified, 7 partial, 4 not implemented) — not 100%**.
+What is verified is listed below; what is
 not is in [Not implemented](#not-implemented).
 
 * Stream open returns exactly one valid `<stream:features>` (RFC 6120 §4.3).
@@ -467,6 +474,30 @@ not is in [Not implemented](#not-implemented).
   `0x01` and a refused login gets `0x05`. All limits live in the
   `mqtt:` section of `exjabberd.yml` (`allow_anonymous`,
   `max_payload`, `max_clients`, `max_queued`, `bridge.*`).
+* **MQTT 5.0 (Fase 17, same port 1883, negotiated per CONNECT)**:
+  full property codec and reason codes; CONNACK advertises Receive
+  Maximum, Maximum Packet Size, Topic Alias Maximum (16) and the
+  availability flags; publish properties (content type, response
+  topic, correlation data, user properties) pass through to
+  subscribers; subscription identifiers and the subscription
+  options No Local / Retain As Published / Retain Handling are
+  honored; shared subscriptions (`$share/<group>/<filter>`) deliver
+  one copy per group, round-robin; inbound topic aliases resolve
+  per connection (unknown alias → DISCONNECT `0x94`); sessions are
+  governed by the Session Expiry Interval (a graceful DISCONNECT
+  keeps a live session, DISCONNECT may narrow the expiry to 0);
+  Will Delay parks an ungraceful Will until the delay elapses, the
+  session ends, or the session is continued (DISCONNECT reason
+  `0x04` publishes it at once); message expiry applies to retained
+  and queued messages, with the remaining interval stamped at
+  delivery; outbound deliveries honor the client's Receive Maximum
+  (FIFO windowing) and Maximum Packet Size (oversize dropped);
+  empty ClientIds are assigned one; bad logins get CONNACK `0x86`,
+  and an Authentication Method in CONNECT is refused with `0x8C`
+  (enhanced authentication itself is not offered). Proven by
+  `test_mqtt5_phase17.py` (21/21, paho MQTTv5 + a raw-socket
+  client) and 16 ExUnit codec/broker tests; the v3.1.1 probe above
+  still passes unchanged.
 * **MQTT ↔ XMPP PubSub bridge (Fase 6, `mod_mqtt_bridge`)**: an
   MQTT topic maps to a PubSub node of the same name, both
   directions — an MQTT publish auto-creates the node (open/open)
@@ -474,8 +505,7 @@ not is in [Not implemented](#not-implemented).
   publish arrives at MQTT subscribers as a plain publish. Each
   message crosses the bridge once per direction (loop protection
   via the `from_bridge` flag); the bridge is disabled with
-  `mqtt.bridge.enabled: false`. MQTT 5.0 is NOT implemented — the
-  broker speaks 3.1.1 only. The two-node S2S probe
+  `mqtt.bridge.enabled: false`. The two-node S2S probe
   (`test_s2s.py`, 17/17 in Fase 3) was not re-run in this phase:
   it needs a second working copy of the repo, which this phase's
   scope forbids; the single-node S2S probe (`test_s2s_slix.py`)
@@ -634,12 +664,12 @@ not is in [Not implemented](#not-implemented).
 Honest list — these were claimed by the old code/config and are not
 there. Do not rely on them until they land. The full per-area table
 with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
-(34 verified / 9 partial / 21 not, ≈60% of the 64-item checklist).
+(53 verified / 7 partial / 4 not, ≈88% of the 64-item checklist).
 
-* **HTTP stack (remaining)**: no TLS HTTP listener (5443), no
-  captcha endpoint, no ACME challenge handling, no HTTP/2.
-  Admin has no MUC/PubSub management pages; upload has no per-user
-  quota and no virus scanning; BOSH `hold` is fixed at 1 and only
+* **HTTP stack (remaining)**: no HTTP/2 (the listener is a
+  hand-rolled HTTP/1.1 server; the TLS listener, captcha endpoint
+  and ACME http-01 serving are implemented since Fase 15).
+  Upload has no virus scanning; BOSH `hold` is fixed at 1 and only
   the last 5 responses are kept for `rid` replay; Stream Management
   `<resume/>` across BOSH/WebSocket connections is refused.
 * **MIX** (XEP-0369): core implemented and wire-verified since
@@ -677,16 +707,23 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   global `max_allocations`.
 * **OMEMO generations `:1` / `:2`**: only the legacy generation is
   implemented and advertised.
-* **MQTT 5.0**: the broker speaks MQTT v3.1.1 only.
+* **MQTT 5.0 (edges)**: the protocol is implemented and
+  wire-verified since Fase 17 (see above); what remains is
+  enhanced authentication (CONNECT naming an Authentication Method
+  is refused with CONNACK `0x8C`), outbound topic-alias compression
+  (the server always sends full topic names) and
+  server-initiated re-authentication.
 * **Clustering (edges)**: MUC rooms, vCards, Stream Management
   resume state and per-host ETS caches stay node-local; two nodes
   with independent Mnesia schemas cannot merge live; a user bound
   with the same resource on two nodes is last-registration-wins.
 * **Long-tail modules**: vCard, private XML storage, privacy lists /
-  blocking, last activity, ad-hoc commands, SOCKS5 bytestreams
-  (proxy65), Push, shared roster, avatars, caps, announce and the
-  rest exist as partial implementations that load at boot — none of
-  them is verified over the wire. "39 modules start at boot" means
+  blocking, last activity and ad-hoc commands are implemented and
+  wire-verified since Fase 10. What remains partial and unverified
+  over the wire: SOCKS5 bytestreams (proxy65), Push (XEP-0357),
+  shared roster groups, PEP avatars (XEP-0084), entity
+  capabilities, delegation and the rest of the grouped tail
+  (PARITY item 64). "39 modules start at boot" means
   they load, not that they work.
 
 ## Layout

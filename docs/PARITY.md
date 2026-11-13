@@ -2,7 +2,8 @@
 
 Date: 2026-11-12 (Fase 10–15 of the 100% round); re-verified and
 extended 2026-11-13 (Fase 16: verify.sh harness fix, room-creation
-race fix, SQL/PostgreSQL auth backend — see Known limitations).
+race fix, SQL/PostgreSQL auth backend — see Known limitations;
+Fase 17: MQTT 5.0).
 Method: every item below is judged only from evidence produced in this
 repo — a named probe with a pass count, or `mix test`. "Works" means a
 real client spoke to a real server over the wire; a module that merely
@@ -11,28 +12,28 @@ as verified. Reproduce everything with `./verify.sh`.
 
 ## Verdict
 
-**Not 100%.** On the 64-item checklist below: **52 verified, 7 partial,
-5 not implemented — (52 + 7×0.5) / 64 ≈ 87%.**
+**Not 100%.** On the 64-item checklist below: **53 verified, 7 partial,
+4 not implemented — (53 + 7×0.5) / 64 ≈ 88%.**
 
-That 85% is honest only for this checklist. Against ejabberd's full
+That 88% is honest only for this checklist. Against ejabberd's full
 module catalogue it would be lower: the long tail of ejabberd modules
 is counted here as a handful of grouped items, not one item per
 module. The core that a small private server actually needs — C2S,
 SM/Carbons/CSI, MAM, PubSub/PEP with collections and subscription
 authorization, full MUC with admin IQs, MIX core, S2S dialback,
 BOSH/WebSocket, upload with quota, HTTPS + captcha + ACME http-01,
-Jingle signaling, MQTT 3.1.1, clustering,
+Jingle signaling, MQTT 3.1.1 and 5.0, clustering,
 Mnesia + SQLite auth, roster subscriptions, privacy/blocking, vCard,
 private storage, last activity, ad-hoc commands — is real and proven.
-The gaps are the enterprise edges: alternate auth backends,
-MQTT 5.0, OMEMO generations :1/:2, S2S EXTERNAL/Bidi, HTTP/2, and the
-remaining grouped long tail (item 64).
+The gaps are the enterprise edges: alternate auth backends (MySQL /
+LDAP / PAM), OMEMO generations :1/:2, S2S EXTERNAL/Bidi, HTTP/2, and
+the remaining grouped long tail (item 64).
 
-## Evidence (all re-run green by `./verify.sh` on 2026-11-13, Fase 16)
+## Evidence (all re-run green by `./verify.sh` on 2026-11-13, Fase 17)
 
 | Proof | Result |
 |---|---|
-| `mix test` (12 ExUnit files) | 119/119, 0 failures |
+| `mix test` (12 ExUnit files) | 135/135, 0 failures |
 | `mix compile` | 0 warnings (warnings are errors) |
 | `audit_raw_test.py` (raw sockets, C2S core) | 18/18 |
 | `audit_slix_test.py` (slixmpp 1.17) | 10/10 |
@@ -56,8 +57,9 @@ remaining grouped long tail (item 64).
 | `test_http_edges_phase15.py` (HTTPS, ACME, captcha, upload quota, admin/API rooms+nodes) | 21/21 |
 | `test_auth_sql_phase16.py` (SQL auth vs real PostgreSQL 16.9; own server + own PG) | 19/19 |
 | `test_auth_backends_phase16.py` (JWT / OAuth / external auth; own server per backend) | 25/25 |
+| `test_mqtt5_phase17.py` (MQTT 5.0: paho v5 + raw-socket client) | 21/21 |
 
-Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25 = **464**.
+Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25+21 = **485**.
 
 ## Checklist
 
@@ -140,13 +142,13 @@ above) · **P** = partial (works, with a named limit) ·
 | 44 | OMEMO legacy generation (XEP-0384 over PEP) | V | Jingle 25/25 |
 | 45 | OMEMO generations `:1` / `:2` | N | not implemented or advertised |
 
-### MQTT — 2 V, 1 N
+### MQTT — 3 V, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
 | 46 | MQTT v3.1.1 broker: QoS 0/1/2, retained, Will, persistent sessions, takeover | V | MQTT 28/28 |
 | 47 | MQTT ↔ XMPP PubSub bridge (both directions, loop protection) | V | MQTT 28/28 |
-| 48 | MQTT 5.0 | N | broker speaks 3.1.1 only |
+| 48 | MQTT 5.0 | V | `test_mqtt5_phase17.py` 21/21 (paho MQTTv5 + raw-socket client) + 16 ExUnit codec/broker tests — negotiated per CONNECT: full property codec, CONNACK limits (Receive Maximum 65535, Maximum Packet Size, Topic Alias Maximum 16, availability flags), property pass-through (content type, response topic, correlation data, user properties), subscription identifiers, subscription options (No Local, Retain As Published, Retain Handling 0/1/2), shared subscriptions (`$share`, round-robin, one copy per group), topic aliases (unknown alias → DISCONNECT 0x94), session expiry (persists across graceful DISCONNECT, DISCONNECT may narrow it to 0, raising it is a protocol error), Will Delay (fires at delay, at session end, or never when the session is continued; DISCONNECT 0x04 publishes at once), message expiry (retained + queued; remaining interval stamped at delivery), Receive Maximum windowing and Maximum Packet Size drop on outbound deliveries, assigned client identifiers for empty ClientIds, reason codes (0x86 bad auth, 0x8C authentication method refused — enhanced auth itself is not offered, a stray AUTH packet closes with DISCONNECT 0x82). Limits: no outbound topic-alias compression (server always sends full topic names), no request/response-information service beyond passing Response Topic through, server-initiated re-authentication not implemented |
 
 ### Clustering — 2 V, 1 P
 
@@ -181,10 +183,10 @@ above) · **P** = partial (works, with a named limit) ·
 
 ## Count
 
-- Verified (V): 52 — items 1–29, 32–38, 43–44, 46–47, 49–50, 52–53, 56–63.
+- Verified (V): 53 — items 1–29, 32–38, 43–44, 46–48, 49–50, 52–53, 56–63.
 - Partial (P): 7 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented), 55 (JWT/OAuth/external verified; LDAP + PAM not implemented).
-- Not implemented (N): 5 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 48 (MQTT 5.0), 64 (grouped long tail).
-- Total: 64. Score: (52 + 7 × 0.5) / 64 = 55.5 / 64 ≈ **87%**.
+- Not implemented (N): 4 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 64 (grouped long tail).
+- Total: 64. Score: (53 + 7 × 0.5) / 64 = 56.5 / 64 ≈ **88%**.
 
 (The earlier draft of this section still carried the pre-Fase-10
 counts — 34/9/21 ≈ 60% — long after the checklist rows above it had

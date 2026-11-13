@@ -71,9 +71,10 @@ listen:
     port: 1883
     ip: "::"
     module: exjabberd_mqtt
-    # MQTT v3.1.1 broker (Fase 6). Options live in the `mqtt:`
-    # section below; authentication reuses the XMPP accounts
-    # (Auth backend) when a username is given.
+    # MQTT broker: v3.1.1 (Fase 6) and v5.0 (Fase 17 — properties,
+    # session expiry, shared subscriptions, topic aliases). Options
+    # live in the `mqtt:` section below; authentication reuses the
+    # XMPP accounts (Auth backend) when a username is given.
 ## NOT IMPLEMENTED (removed from the active listen list on purpose —
 ## the old file claimed these ports, but nothing ever listened on them):
 ##   5443  HTTPS: /admin, /api, /bosh, /captcha, /upload, /ws — the

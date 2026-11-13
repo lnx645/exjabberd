@@ -196,6 +196,7 @@ if [ "$FAILURES" = 0 ]; then
   run_probe "test_jingle_phase5.py"
   run_probe "test_stun_turn_phase5.py"
   run_probe "test_mqtt_phase6.py"
+  run_probe "test_mqtt5_phase17.py"
   run_probe "test_longtail_phase10.py"
   run_probe "test_subscriptions_phase11.py"
 fi

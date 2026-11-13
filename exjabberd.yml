@@ -96,12 +96,16 @@ s2s_use_starttls: optional
 ## working — no password reset). `sql` is a real PostgreSQL backend
 ## (Fase 16, see `auth_sql:` below). The remaining ejabberd names
 ## (`ldap`, `anonymous`, `jwt`, `external`, `oauth`, `pam`) are
-## recognised but only the stubs from before exist for them, except
-## `anonymous` which works as before; an unknown value warns and
+## recognised; `jwt`, `external` and `oauth` are real backends
+## since Fase 16 (see below), `anonymous` works as before, and
+## `ldap`/`pam` remain honest stubs; an unknown value warns and
 ## falls back to `mnesia`.
 auth_method: mnesia
 # auth_method: sqlite
 # auth_method: sql
+# auth_method: jwt
+# auth_method: oauth
+# auth_method: external
 
 ## Require STARTTLS before SASL authentication (ejabberd's
 ## `starttls_required`): when true, SASL mechanisms are not
@@ -129,6 +133,18 @@ auth_sqlite:
 #   database: exjabberd
 #   username: exjabberd
 #   password: <redacted> # or EXJABBERD_AUTH_SQL_PASSWORD
+
+## Stateless auth backends (Fase 16). JWT: the SASL PLAIN password
+## is a JWT signed HS256 with this shared secret, its `sub` claim
+## must equal the username (EXJABBERD_AUTH_JWT_SECRET wins).
+# auth_jwt_secret: "<shared secret>"
+## OAuth: the SASL PLAIN password is an access token, checked
+## against this RFC 7662 introspection endpoint
+## (EXJABBERD_AUTH_OAUTH_URL wins).
+# auth_oauth_url: "http://127.0.0.1:8080/introspect"
+## External: ejabberd extauth protocol against this script
+## (EXJABBERD_AUTH_EXTERNAL_SCRIPT wins).
+# auth_external_script: "/usr/local/bin/extauth.py"
 
 # Dialback secret (XEP-0220): shared by every server in this
 # administrative domain; keys are HMAC-SHA256 over it. When absent,

@@ -57,7 +57,10 @@ defmodule Exjabberd.Application do
       {Exjabberd.Auth.Sqlite, []},
       # SQL auth backend (Fase 16): same lazy-connect contract —
       # the PostgreSQL connection opens on first use, never at boot.
-      {Exjabberd.Auth.Sql, []}
+      {Exjabberd.Auth.Sql, []},
+      # External auth backend (Fase 16): the script process is
+      # spawned lazily on the first request, never at boot.
+      {Exjabberd.Auth.External, []}
     ]
 
     opts = [strategy: :one_for_one, name: Exjabberd.Supervisor]

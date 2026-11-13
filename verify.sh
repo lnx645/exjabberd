@@ -208,6 +208,9 @@ run_probe "test_auth_sqlite_phase8.py"
 # --- 4a2. SQL (PostgreSQL) auth probe (boots its own server + PG) -------
 run_probe "test_auth_sql_phase16.py"
 
+# --- 4a3. JWT / OAuth / external auth probe (boots its own server) ------
+run_probe "test_auth_backends_phase16.py"
+
 # --- 4b. starttls_required + anonymous auth (boots its own server) ------
 run_probe "test_starttls_anon_phase11.py"
 

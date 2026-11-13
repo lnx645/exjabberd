@@ -228,51 +228,6 @@ defmodule Exjabberd.Auth.Anonymous do
   def set_password(_host, _user, _pass), do: :ok
 end
 
-defmodule Exjabberd.Auth.Jwt do
-  @moduledoc "JWT auth - `ejabberd_auth_jwt` equivalent."
-  @behaviour Exjabberd.Auth.Behaviour
-  @impl true
-  def authenticate(_host, _user, _pass), do: false
-  @impl true
-  def user_exists(_host, _user), do: false
-  @impl true
-  def create_user(_host, _user, _pass), do: {:error, :not_supported}
-  @impl true
-  def remove_user(_host, _user), do: {:error, :not_supported}
-  @impl true
-  def set_password(_host, _user, _pass), do: {:error, :not_supported}
-end
-
-defmodule Exjabberd.Auth.External do
-  @moduledoc "External script auth - `ejabberd_auth_external`."
-  @behaviour Exjabberd.Auth.Behaviour
-  @impl true
-  def authenticate(_host, _user, _pass), do: false
-  @impl true
-  def user_exists(_host, _user), do: false
-  @impl true
-  def create_user(_host, _user, _pass), do: {:error, :not_supported}
-  @impl true
-  def remove_user(_host, _user), do: {:error, :not_supported}
-  @impl true
-  def set_password(_host, _user, _pass), do: {:error, :not_supported}
-end
-
-defmodule Exjabberd.Auth.Oauth do
-  @moduledoc "OAuth auth - `ejabberd_oauth`."
-  @behaviour Exjabberd.Auth.Behaviour
-  @impl true
-  def authenticate(_host, _user, _pass), do: false
-  @impl true
-  def user_exists(_host, _user), do: false
-  @impl true
-  def create_user(_host, _user, _pass), do: {:error, :not_supported}
-  @impl true
-  def remove_user(_host, _user), do: {:error, :not_supported}
-  @impl true
-  def set_password(_host, _user, _pass), do: {:error, :not_supported}
-end
-
 defmodule Exjabberd.Auth.Pam do
   @moduledoc "PAM auth - `ejabberd_auth_pam` equivalent."
   @behaviour Exjabberd.Auth.Behaviour

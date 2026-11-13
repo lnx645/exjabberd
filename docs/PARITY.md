@@ -11,8 +11,8 @@ as verified. Reproduce everything with `./verify.sh`.
 
 ## Verdict
 
-**Not 100%.** On the 64-item checklist below: **52 verified, 6 partial,
-6 not implemented — (52 + 6×0.5) / 64 ≈ 86%.**
+**Not 100%.** On the 64-item checklist below: **52 verified, 7 partial,
+5 not implemented — (52 + 7×0.5) / 64 ≈ 87%.**
 
 That 85% is honest only for this checklist. Against ejabberd's full
 module catalogue it would be lower: the long tail of ejabberd modules
@@ -55,8 +55,9 @@ remaining grouped long tail (item 64).
 | `test_mix_phase14.py` (MIX channels XEP-0369) | 17/17 |
 | `test_http_edges_phase15.py` (HTTPS, ACME, captcha, upload quota, admin/API rooms+nodes) | 21/21 |
 | `test_auth_sql_phase16.py` (SQL auth vs real PostgreSQL 16.9; own server + own PG) | 19/19 |
+| `test_auth_backends_phase16.py` (JWT / OAuth / external auth; own server per backend) | 25/25 |
 
-Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19 = **439**.
+Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25 = **464**.
 
 ## Checklist
 
@@ -155,14 +156,14 @@ above) · **P** = partial (works, with a named limit) ·
 | 50 | Shared Mnesia tables (accounts, roster, offline, MAM, PubSub) | V | cluster 22/22 |
 | 51 | Cluster completeness | P | MUC rooms, vCards, SM resume state and per-host ETS caches stay node-local; two nodes with independent schemas cannot merge live; same resource on two nodes is last-registration-wins |
 
-### Auth backends — 3 V, 1 P, 1 N
+### Auth backends — 3 V, 2 P, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
 | 52 | Mnesia auth (SCRAM-SHA-256 verifiers, survives restart) | V | raw 18/18 + restart proofs |
 | 53 | SQLite auth (same verifier format, migration tool) | V | SQLite 19/19 + 10 ExUnit |
 | 54 | SQL / PostgreSQL / MySQL auth | P | **PostgreSQL: real backend, wire-verified (Fase 16)** — native PostgreSQL wire-protocol client written for this codebase (`Exjabberd.PgWire`: startup, cleartext/MD5/**SCRAM-SHA-256** auth with server-signature verification, extended query protocol, bytea) + `Exjabberd.Auth.Sql` storing the same SCRAM verifier format as Mnesia/SQLite in a `passwd` table; `test_auth_sql_phase16.py` boots a real PostgreSQL 16.9 (embedded binaries, SCRAM password auth) and proves PLAIN + SCRAM logins, slixmpp login, verifier hygiene (16 B salt / 4096 iters / 32 B keys, never the password), restart persistence, password rotation, remove_user, and Mnesia→SQL migration keeping the password — 19/19. **MySQL: NOT implemented** — no MySQL/MariaDB server exists in this sandbox to verify against, and the backend rejects a non-PostgreSQL `auth_sql.server` config explicitly instead of pretending (`{:error, :unsupported_server}`) |
-| 55 | LDAP / JWT / OAuth / external / PAM auth | N | stubs that return `false` / `not_implemented` |
+| 55 | LDAP / JWT / OAuth / external / PAM auth | P | **JWT, OAuth and external are real backends, wire-verified (Fase 16)** by `test_auth_backends_phase16.py` — 25/25: JWT (native HS256 verification, `sub` = username, `exp`/`nbf` enforced, alg=none and wrong-secret tokens rejected), OAuth (RFC 7662 introspection over `:httpc` against a fixture endpoint: active/username/exp enforced, fails closed when the endpoint is down), external (ejabberd extauth length-prefixed stdio protocol against a fixture script: auth/isuser/tryregister/setpass/removeuser all effective on the wire). **LDAP: NOT implemented** — no LDAP server exists in this sandbox to verify a bind/search flow against, so it stays an honest stub. **PAM: NOT implemented** — PAM cannot be exercised meaningfully in this sandbox (no PAM service stack; the sandbox also runs as root), honest stub |
 | 56 | Anonymous auth | V | re-probed Fase 11 (`test_starttls_anon_phase11.py`): with `auth_method: anonymous`, a never-registered user logs in with any password, binds and uses the session — the SASL `ANONYMOUS` mechanism itself is not advertised/implemented |
 
 ### Remaining ejabberd surface — 7 V, 0 P, 1 N
@@ -181,9 +182,9 @@ above) · **P** = partial (works, with a named limit) ·
 ## Count
 
 - Verified (V): 52 — items 1–29, 32–38, 43–44, 46–47, 49–50, 52–53, 56–63.
-- Partial (P): 6 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented).
-- Not implemented (N): 6 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 48 (MQTT 5.0), 55 (LDAP/JWT/OAuth/PAM auth), 64 (grouped long tail).
-- Total: 64. Score: (52 + 6 × 0.5) / 64 = 55 / 64 ≈ **86%**.
+- Partial (P): 7 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented), 55 (JWT/OAuth/external verified; LDAP + PAM not implemented).
+- Not implemented (N): 5 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 48 (MQTT 5.0), 64 (grouped long tail).
+- Total: 64. Score: (52 + 7 × 0.5) / 64 = 55.5 / 64 ≈ **87%**.
 
 (The earlier draft of this section still carried the pre-Fase-10
 counts — 34/9/21 ≈ 60% — long after the checklist rows above it had

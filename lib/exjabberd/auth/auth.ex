@@ -5,13 +5,13 @@ defmodule Exjabberd.Auth do
   Dispatches to configured backend per-host. Supports all ejabberd backends:
   * `:mnesia` - internal (default, `ejabberd_auth_mnesia`)
   * `:sqlite` - SQLite file (Fase 8, real backend, `ejabberd_auth_sql` for SQLite)
-  * `:sql` - MySQL, PgSQL (`ejabberd_auth_sql`) — stub, not implemented
-  * `:ldap` - LDAP (`ejabberd_auth_ldap`)
+  * `:sql` - PostgreSQL (`ejabberd_auth_sql`) — real backend (Fase 16); MySQL not implemented
+  * `:ldap` - LDAP (`ejabberd_auth_ldap`) — stub, not implemented
   * `:anonymous` - XEP-0078 (`ejabberd_auth_anonymous`)
-  * `:jwt` - JWT Bearer (`ejabberd_auth_jwt`)
-  * `:external` - external script (`ejabberd_auth_external` + `extauth`)
-  * `:oauth` - OAuth2 (`ejabberd_oauth`)
-  * `:pam` - PAM (`ejabberd_auth_pam`)
+  * `:jwt` - JWT Bearer (`ejabberd_auth_jwt`) — real backend (Fase 16)
+  * `:external` - external script (`ejabberd_auth_external` + `extauth`) — real backend (Fase 16)
+  * `:oauth` - OAuth2 introspection (`ejabberd_oauth`) — real backend (Fase 16)
+  * `:pam` - PAM (`ejabberd_auth_pam`) — stub, not implemented
   Also handles `check_password` with `plain`/`scram` like ejabberd.
   """
 

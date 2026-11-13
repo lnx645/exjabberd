@@ -611,9 +611,11 @@ not is in [Not implemented](#not-implemented).
   (`Exjabberd.PgWire`, incl. SCRAM-SHA-256 database auth) plus
   `Exjabberd.Auth.Sql` with the same verifier format, proven
   against a real PostgreSQL 16.9 by `test_auth_sql_phase16.py`
-  (19/19). MySQL is still NOT implemented (no MySQL/MariaDB server
-  exists in this sandbox); LDAP/JWT/OAuth/external/PAM stay
-  stubs too; the SQLite backend is single-file (no clustering of
+  (19/19). The JWT, OAuth (introspection) and external (extauth)
+  backends are also real since Fase 16
+  (`test_auth_backends_phase16.py`, 25/25). MySQL is still NOT
+  implemented (no MySQL/MariaDB server exists in this sandbox);
+  LDAP/PAM stay stubs too; the SQLite backend is single-file (no clustering of
   the auth store itself — a cluster still shares accounts through
   Mnesia, see Fase 7); Mnesia has a pre-existing persistence
   quirk worth knowing — a VM halted abruptly (e.g. `mix run -e`
@@ -648,11 +650,13 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   like `open` for local users. (Collections and the `authorize`
   approval flow are implemented and wire-verified since Fase 13;
   MUC administration since Fase 12.)
-* **Auth backends other than Mnesia, SQLite and SQL/PostgreSQL**
-  (MySQL, LDAP, JWT, OAuth, external, PAM): stubs that return
-  `false` / `not_implemented`. (`anonymous` works as before, but was
+* **Auth backends other than Mnesia, SQLite, SQL/PostgreSQL, JWT,
+  OAuth and external** (MySQL, LDAP, PAM): stubs that return
+  `false` / `not_implemented` — no MySQL or LDAP server exists in
+  this sandbox to verify against, and PAM cannot be exercised
+  meaningfully here. (`anonymous` works as before, but was
   not re-probed in Fase 1–9; SQLite is real since Fase 8 and
-  SQL/PostgreSQL since Fase 16, see above.)
+  SQL/PostgreSQL, JWT, OAuth and external since Fase 16, see above.)
 * ~~**Roster subscription requests**~~ — implemented in Fase 11
   (full RFC 6121 state machine, wire-verified).
   ~~`starttls_required`~~ — likewise real since Fase 11: a per-host

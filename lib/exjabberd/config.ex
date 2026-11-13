@@ -177,6 +177,46 @@ defmodule Exjabberd.Config do
     end
   end
 
+  @doc """
+  Configured JWT auth shared secret (`auth_jwt_secret:` in
+  `exjabberd.yml`), or nil when unconfigured. The
+  `EXJABBERD_AUTH_JWT_SECRET` environment variable wins over the
+  file — the same rule as the other auth settings.
+  """
+  @spec auth_jwt_secret() :: binary() | nil
+  def auth_jwt_secret do
+    case System.get_env("EXJABBERD_AUTH_JWT_SECRET") do
+      s when is_binary(s) and s != "" -> s
+      _ -> get(:global, :auth_jwt_secret, nil)
+    end
+  end
+
+  @doc """
+  Configured OAuth introspection endpoint (`auth_oauth_url:` in
+  `exjabberd.yml`), or nil when unconfigured. The
+  `EXJABBERD_AUTH_OAUTH_URL` environment variable wins.
+  """
+  @spec auth_oauth_url() :: binary() | nil
+  def auth_oauth_url do
+    case System.get_env("EXJABBERD_AUTH_OAUTH_URL") do
+      s when is_binary(s) and s != "" -> s
+      _ -> get(:global, :auth_oauth_url, nil)
+    end
+  end
+
+  @doc """
+  Configured external auth script path (`auth_external_script:`
+  in `exjabberd.yml`), or nil when unconfigured. The
+  `EXJABBERD_AUTH_EXTERNAL_SCRIPT` environment variable wins.
+  """
+  @spec auth_external_script() :: binary() | nil
+  def auth_external_script do
+    case System.get_env("EXJABBERD_AUTH_EXTERNAL_SCRIPT") do
+      s when is_binary(s) and s != "" -> s
+      _ -> get(:global, :auth_external_script, nil)
+    end
+  end
+
   @doc "Configured STUN/TURN section (`turn:` in exjabberd.yml), or `%{}`."
   @spec turn() :: map()
   def turn, do: get(:global, :turn, %{})
@@ -464,6 +504,20 @@ defmodule Exjabberd.Config do
     auth_sql =
       parse_auth_sql(Map.get(data, "auth_sql", Map.get(data, :auth_sql, %{})))
 
+    # Stateless auth backends (Fase 16): JWT shared secret, OAuth
+    # introspection URL, external script path. Top-level scalars;
+    # each has an EXJABBERD_AUTH_* env var that wins at read time.
+    scalar = fn key ->
+      case Map.get(data, key, Map.get(data, String.to_atom(key))) do
+        s when is_binary(s) and s != "" -> s
+        _ -> nil
+      end
+    end
+
+    auth_jwt_secret = scalar.("auth_jwt_secret")
+    auth_oauth_url = scalar.("auth_oauth_url")
+    auth_external_script = scalar.("auth_external_script")
+
     turn_shared_secret =
       case Map.get(turn_config, "shared_secret", Map.get(turn_config, :shared_secret)) do
         secret when is_binary(secret) and secret != "" ->
@@ -503,6 +557,9 @@ defmodule Exjabberd.Config do
       |> put_in([:global, :access_rules], access_rules)
       |> put_in([:global, :auth_sqlite_path], auth_sqlite_path)
       |> put_in([:global, :auth_sql], auth_sql)
+      |> put_in([:global, :auth_jwt_secret], auth_jwt_secret)
+      |> put_in([:global, :auth_oauth_url], auth_oauth_url)
+      |> put_in([:global, :auth_external_script], auth_external_script)
       |> put_in([:global, :s2s_use_starttls], s2s_use_starttls)
       |> put_in([:global, :s2s_dialback_secret], s2s_dialback_secret)
       |> put_in([:global, :s2s_host_overrides], s2s_host_overrides)

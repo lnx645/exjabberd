@@ -1,39 +1,54 @@
 defmodule Exjabberd.Mod.Omemo do
   @moduledoc """
-  OMEMO — XEP-0384 (legacy `eu.siacs.conversations.axolotl`
-  generation, the one Conversations / Gajim / slixmpp speak) over
-  PEP (XEP-0163).
+  OMEMO — XEP-0384, all three wire generations, over PEP
+  (XEP-0163):
 
-  The server does not do any cryptography: OMEMO key material is
-  opaque payload in PEP nodes, and the Signal sessions live
-  entirely in the clients. What the server owes XEP-0384 is the
-  *plumbing*, and it lives here plus in `Exjabberd.Mod.PubSub`
-  (PEP namespacing, auto-create, publish-options) and
-  `Exjabberd.Mod.Disco` (bare-JID disco):
+  * legacy `eu.siacs.conversations.axolotl` (advertised as
+    `urn:xmpp:omemo:0`, XEP-0384 pre-0.4) — the generation
+    Conversations / Gajim / slixmpp speak;
+  * `urn:xmpp:omemo:1` (XEP-0384 0.4.0–0.7.0);
+  * `urn:xmpp:omemo:2` (XEP-0384 0.8.0+, the current spec).
 
-  * Device list node `eu.siacs.conversations.axolotl.devicelist`
-    — one item, the current `<list/>` of `<device id/>` elements.
-  * One bundle node per device,
-    `eu.siacs.conversations.axolotl.bundles:<deviceId>` — one item,
-    the `<bundle/>` with the identity key, signed pre-key and
-    pre-keys (XEP-0384 §4.3, Example 3).
-  * Both node kinds are `access_model: open` (contacts without a
-    presence subscription must still read them, XEP-0384 §4.2),
-    `publish_model: open` (the owner publishes; PEP additionally
-    restricts publishing to the owner — see `PubSub.handle_publish/5`),
-    `max_items: 1` (one current list / one current bundle per node).
+  The server does no cryptography: OMEMO key material is opaque
+  payload in PEP nodes, the Signal sessions live entirely in the
+  clients, and `<encrypted/>` message payloads are ordinary
+  message routing. What the server owes XEP-0384 is the
+  *plumbing*, here plus in `Exjabberd.Mod.PubSub` (PEP
+  namespacing, auto-create, publish-options) and the bare-JID
+  disco in `Exjabberd.Mod.Disco` / `PubSub`:
 
-  A contact fetches a bundle with an IQ-get for `<items/>`
-  addressed to the owner's *bare* JID (XEP-0384 §4.4, Example 4);
-  the device list is discovered through disco#items on the bare
-  JID, and the account advertises `urn:xmpp:omemo:0` in disco#info.
+  * Device lists:
+    - legacy node `eu.siacs.conversations.axolotl.devicelist`,
+      one item, the current `<list/>` of `<device id/>` elements;
+    - `urn:xmpp:omemo:1:devices` and `urn:xmpp:omemo:2:devices`,
+      one item with id `current`, a `<devices/>` element
+      (XEP-0384 §5.3.1 in both generations).
+  * Bundles:
+    - legacy: one node per device,
+      `eu.siacs.conversations.axolotl.bundles:<deviceId>`, one
+      item, the `<bundle/>` with identity key, signed pre-key and
+      pre-keys;
+    - :1/:2: ONE node per account, `urn:xmpp:omemo:1:bundles` /
+      `urn:xmpp:omemo:2:bundles`, holding MANY items — one
+      `<bundle/>` item per device, item id = device id
+      (XEP-0384 §5.3.2). The node is therefore configured with
+      `max_items` = "max" (encoded internally as 100_000, the
+      same value publish-options `pubsub#max_items=max` maps to
+      in `PubSub.config_from_form/1`), unlike every other OMEMO
+      node which holds exactly one item.
+  * Every OMEMO node is `access_model: open` (XEP-0384 REQUIRES
+    it for the :1/:2 devices and bundles nodes, and §4.2 of the
+    legacy text for its nodes: contacts without a presence
+    subscription must still read them) and `publish_model: open`
+    (the owner publishes; PEP additionally restricts publishing
+    to the owner — see `PubSub.handle_publish/5`).
 
-  Deliberately NOT implemented: the newer `urn:xmpp:omemo:1` /
-  `urn:xmpp:omemo:2` generations (single `...:bundles` node with one
-  item per device, `urn:xmpp:omemo:2:devices` node) — no client in
-  the verification setup speaks them, and advertising them without
-  the matching node layout would be a lie. The legacy nodes above
-  are what the probes verify.
+  A contact fetches bundles with an IQ-get for `<items/>`
+  addressed to the owner's *bare* JID; the device list is
+  discovered through disco#items on the bare JID, and the account
+  advertises all three features — `urn:xmpp:omemo:0`,
+  `urn:xmpp:omemo:1`, `urn:xmpp:omemo:2` — in disco#info, each
+  backed by the real node layout above.
   """
 
   use Exjabberd.Mod.GenMod
@@ -41,50 +56,85 @@ defmodule Exjabberd.Mod.Omemo do
 
   @devicelist_node "eu.siacs.conversations.axolotl.devicelist"
   @bundles_prefix "eu.siacs.conversations.axolotl.bundles:"
-  @omemo_ns "urn:xmpp:omemo:0"
   @axolotl_ns "eu.siacs.conversations.axolotl"
 
-  @doc "The OMEMO device list node name (XEP-0384 §4.2)."
+  # XEP-0384 :1 (0.4.0) and :2 (0.8.0) node names.
+  @modern_devices_nodes ["urn:xmpp:omemo:1:devices", "urn:xmpp:omemo:2:devices"]
+  @modern_bundles_nodes ["urn:xmpp:omemo:1:bundles", "urn:xmpp:omemo:2:bundles"]
+
+  # The internal encoding of XEP-0060 `pubsub#max_items` = "max"
+  # (see PubSub.config_from_form/1): effectively unbounded.
+  @max_items_unbounded 100_000
+
+  @features ["urn:xmpp:omemo:0", "urn:xmpp:omemo:1", "urn:xmpp:omemo:2"]
+
+  @doc "The OMEMO device list node name (legacy generation)."
   @spec devicelist_node() :: binary()
   def devicelist_node, do: @devicelist_node
 
-  @doc "The bundle node name for one device id (XEP-0384 §4.3)."
+  @doc "The legacy bundle node name for one device id."
   @spec bundle_node(binary() | non_neg_integer()) :: binary()
   def bundle_node(device_id), do: @bundles_prefix <> to_string(device_id)
 
-  @doc "The OMEMO disco feature advertised on accounts."
+  @doc "The OMEMO disco features advertised on accounts (all generations)."
+  @spec disco_features() :: [binary()]
+  def disco_features, do: @features
+
+  @doc "The legacy OMEMO disco feature (`urn:xmpp:omemo:0`)."
   @spec disco_feature() :: binary()
-  def disco_feature, do: @omemo_ns
+  def disco_feature, do: "urn:xmpp:omemo:0"
 
   @doc "The legacy OMEMO payload namespace (`<list/>`, `<bundle/>`)."
   @spec axolotl_ns() :: binary()
   def axolotl_ns, do: @axolotl_ns
 
-  @doc "True when `node` is an OMEMO device list or bundle node."
+  @doc """
+  True when `node` holds many bundle items — the single
+  `urn:xmpp:omemo:1:bundles` / `urn:xmpp:omemo:2:bundles` node,
+  as opposed to the one-item device-list and legacy bundle nodes.
+  """
+  @spec multi_bundle_node?(binary()) :: boolean()
+  def multi_bundle_node?(node) when is_binary(node), do: node in @modern_bundles_nodes
+  def multi_bundle_node?(_), do: false
+
+  @doc "True when `node` is an OMEMO device list or bundle node of any generation."
   @spec omemo_node?(binary()) :: boolean()
   def omemo_node?(node) when is_binary(node) do
-    node == @devicelist_node or String.starts_with?(node, @bundles_prefix)
+    node == @devicelist_node or String.starts_with?(node, @bundles_prefix) or
+      node in @modern_devices_nodes or node in @modern_bundles_nodes
   end
 
   def omemo_node?(_), do: false
 
   @doc """
   Node configuration for an OMEMO node, used when the node is
-  auto-created on first publish (XEP-0384: access open, publish
-  open, one item). Returns keyword opts for `PubSub.create_node/3`.
+  auto-created on first publish: access open, publish open,
+  persistent; one item for device lists and legacy bundle nodes,
+  unbounded items for the :1/:2 single bundles node. Returns
+  keyword opts for `PubSub.create_node/3`.
   """
   @spec node_config(binary()) :: keyword()
   def node_config(node) when is_binary(node) do
-    if omemo_node?(node) do
-      [access_model: "open", publish_model: "open", max_items: 1, persist_items: true]
-    else
-      []
+    cond do
+      multi_bundle_node?(node) ->
+        [
+          access_model: "open",
+          publish_model: "open",
+          max_items: @max_items_unbounded,
+          persist_items: true
+        ]
+
+      omemo_node?(node) ->
+        [access_model: "open", publish_model: "open", max_items: 1, persist_items: true]
+
+      true ->
+        []
     end
   end
 
   @impl true
   def start(host, _opts) do
-    Logger.info("mod_omemo started for #{host} (XEP-0384 legacy nodes over PEP)")
+    Logger.info("mod_omemo started for #{host} (XEP-0384 legacy/:1/:2 nodes over PEP)")
     :ok
   end
 

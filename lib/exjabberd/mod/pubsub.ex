@@ -1059,9 +1059,22 @@ defmodule Exjabberd.Mod.PubSub do
     # XEP-0060 puts the RSM <set/> next to <items/>, as a child of
     # <pubsub/> — not inside <items/>.
     max_items = parse_int(el.attrs["max_items"]) || parse_rsm_max(pubsub_el)
+    # XEP-0060 §6.5.2: <item id/> children request specific items
+    # (this is how OMEMO clients fetch one device's bundle,
+    # XEP-0384 §5.4). When ids are given they win over the limit:
+    # fetch broadly, then keep exactly the requested items.
+    wanted =
+      el.children
+      |> Enum.filter(&match?(%{name: "item"}, &1))
+      |> Enum.map(& &1.attrs["id"])
+      |> Enum.reject(&is_nil/1)
 
-    case get_items(host, resolve_node(pep, node), max_items: max_items || @default_max_items) do
+    limit = if wanted == [], do: max_items || @default_max_items, else: 100_000
+
+    case get_items(host, resolve_node(pep, node), max_items: limit) do
       {:ok, items, _info} ->
+        items = if wanted == [], do: items, else: Enum.filter(items, &(&1.id in wanted))
+
         items_el = %{
           name: "items",
           attrs: %{"node" => node},
@@ -1896,9 +1909,10 @@ defmodule Exjabberd.Mod.Disco do
         %Exjabberd.Xmpp.Jid{local: local, domain: domain}
         when is_binary(local) and local != "" and domain == host ->
           # Disco#info on a local user's bare JID (XEP-0163): the
-          # account advertises PubSub + OMEMO (XEP-0384) so contacts
-          # know the device list / bundles can be fetched here.
-          {acc.features ++ ["urn:xmpp:omemo:0"], acc.identities}
+          # account advertises PubSub + OMEMO (XEP-0384, all three
+          # generations) so contacts know the device list / bundles
+          # can be fetched here.
+          {acc.features ++ Exjabberd.Mod.Omemo.disco_features(), acc.identities}
 
         _ ->
           {acc.features, acc.identities}

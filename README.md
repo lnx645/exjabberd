@@ -100,6 +100,7 @@ ELIXIR_ERL_OPTIONS="+fnu -sname exjabberd-test" mix test
 | Cluster | `test/exjabberd/cluster_test.exs` | 16 |
 | HTTP stack | `test/exjabberd/http_test.exs` | 9 |
 | Jingle / OMEMO / STUN / TURN | `test/exjabberd/jingle_omemo_test.exs` | 11 |
+| OMEMO node config (3 generations) | `test/exjabberd/omemo_test.exs` | 5 |
 | Live C2S | `test/exjabberd/live_c2s_test.exs` | 12 |
 | MAM / PubSub | `test/exjabberd/mam_pubsub_test.exs` | 8 |
 | MQTT codec + broker (3.1.1 + 5.0) | `test/exjabberd/mqtt_test.exs` | 31 |
@@ -122,11 +123,12 @@ The repeatable wire probes at the repo root (all run by
 | `test_stun_turn_phase5.py` | STUN/TURN (TCP live; UDP skips in the sandbox, see below) | 2/2 |
 | `test_mqtt_phase6.py` | MQTT 3.1.1 + PubSub bridge | 28/28 |
 | `test_mqtt5_phase17.py` | MQTT 5.0 (properties, session expiry, shared subs, aliases) | 21/21 |
+| `test_omemo2_phase18.py` | OMEMO `urn:xmpp:omemo:1` / `:2` over PEP | 17/17 |
 | `test_cluster_phase7.py` | clustering, two nodes (boot with `./boot_cluster_nodes.sh start`) | 22/22 |
 | `test_auth_sqlite_phase8.py` | SQLite auth + migration (boots its own server) | 19/19 |
 
-485 wire-probe checks in total, all passing (the table above lists
-the original suites; Fase 10–17 probes are enumerated in
+502 wire-probe checks in total, all passing (the table above lists
+the original suites; Fase 10–18 probes are enumerated in
 `docs/PARITY.md`). Formatting: a
 `.formatter.exs` exists now (added in Fase 9); the files changed in
 Fase 9 are `mix format`-clean. The rest of the repo predates it and
@@ -145,14 +147,14 @@ probe `test_jingle_phase5.py` 25/25, probe
 `test_stun_turn_phase5.py` 2/2 (TCP; UDP checks skipped in the
 sandbox — see the Fase 5 limits below), probe
 `test_mqtt_phase6.py` 28/28, probe `test_cluster_phase7.py`
-22/22, probe `test_auth_sqlite_phase8.py` 19/19, and the Fase 10–17
+22/22, probe `test_auth_sqlite_phase8.py` 19/19, and the Fase 10–18
 probes (long tail, subscriptions, MUC admin, PubSub extras, MIX,
-HTTP edges, SQL + JWT/OAuth/external auth, MQTT 5.0 — counts in
-`docs/PARITY.md`). `mix test` is
-135/135 green. Run it all yourself with `./verify.sh`
-(30/30 steps green). The honest per-area score is in
-[`docs/PARITY.md`](docs/PARITY.md): **≈88% of the 64-item
-checklist (53 verified, 7 partial, 4 not implemented) — not 100%**.
+HTTP edges, SQL + JWT/OAuth/external auth, MQTT 5.0, OMEMO :1/:2 —
+counts in `docs/PARITY.md`). `mix test` is
+140/140 green. Run it all yourself with `./verify.sh`
+(all steps green). The honest per-area score is in
+[`docs/PARITY.md`](docs/PARITY.md): **≈90% of the 64-item
+checklist (54 verified, 7 partial, 3 not implemented) — not 100%**.
 What is verified is listed below; what is
 not is in [Not implemented](#not-implemented).
 
@@ -431,8 +433,8 @@ not is in [Not implemented](#not-implemented).
   the same way. The server disco#info advertises
   `urn:xmpp:jingle:1`, `urn:xmpp:jingle:apps:rtp:1`,
   `urn:xmpp:jingle:transports:ice-udp:1` and `urn:xmpp:extdisco:2`.
-* **OMEMO over PEP (XEP-0384 legacy generation + XEP-0163,
-  `mod_omemo`)**: the device list node
+* **OMEMO over PEP (XEP-0384, all three wire generations +
+  XEP-0163, `mod_omemo`)**: the legacy device list node
   `eu.siacs.conversations.axolotl.devicelist` and one bundle node
   per device `eu.siacs.conversations.axolotl.bundles:<deviceId>`
   live on the user's own bare JID as PEP nodes (internal key
@@ -445,9 +447,18 @@ not is in [Not implemented](#not-implemented).
   fetches the list / bundle with an IQ-get to the owner's bare
   JID and gets the payload byte-identical; subscriptions get a
   `<message type='headline'>` notification from the owner's bare
-  JID on republish. Bare-JID disco#info advertises
-  `urn:xmpp:omemo:0` and bare-JID disco#items lists the user's PEP
-  nodes (the service disco#items no longer leaks them). PEP
+  JID on republish. Since Fase 18 the modern generations work the
+  same way with their own layout (XEP-0384 §5.3): a
+  `urn:xmpp:omemo:1:devices` / `urn:xmpp:omemo:2:devices` node
+  (single item, id `current`) and ONE
+  `urn:xmpp:omemo:1:bundles` / `urn:xmpp:omemo:2:bundles` node per
+  account holding one `<bundle/>` item per device (item id =
+  device id), auto-created with `max_items` = max; a single bundle
+  is fetched with an `<item id/>` child (XEP-0060 §6.5.2).
+  Bare-JID disco#info advertises `urn:xmpp:omemo:0`,
+  `urn:xmpp:omemo:1` and `urn:xmpp:omemo:2`, and bare-JID
+  disco#items lists the user's PEP nodes (the service disco#items
+  no longer leaks them). PEP
   PubSub and bare-JID disco IQs addressed to a local user are now
   answered by the server itself instead of being delivered to
   that user's client socket — that was a pre-existing routing gap
@@ -583,10 +594,7 @@ not is in [Not implemented](#not-implemented).
   the server does no media processing and no DTLS/SRTP — Jingle
   is signaling only; federated Jingle is routed but the session
   is only tracked on the node that saw the initiate (a terminate
-  arriving via the other node is not tracked there); OMEMO is the
-  legacy generation only — the newer `urn:xmpp:omemo:1` / `:2`
-  generations (single `...:bundles` node, `urn:xmpp:omemo:2:devices`)
-  are not implemented or advertised; TURN has no per-user quota
+  arriving via the other node is not tracked there); TURN has no per-user quota
   beyond the global `max_allocations`; STUN Binding without
   credentials is answered unauthenticated (allowed by RFC 5389);
   **UDP wire verification could not run in this sandbox**: the
@@ -664,7 +672,7 @@ not is in [Not implemented](#not-implemented).
 Honest list — these were claimed by the old code/config and are not
 there. Do not rely on them until they land. The full per-area table
 with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
-(53 verified / 7 partial / 4 not, ≈88% of the 64-item checklist).
+(54 verified / 7 partial / 3 not, ≈90% of the 64-item checklist).
 
 * **HTTP stack (remaining)**: no HTTP/2 (the listener is a
   hand-rolled HTTP/1.1 server; the TLS listener, captcha endpoint
@@ -792,8 +800,13 @@ with the counting method is in [`docs/PARITY.md`](docs/PARITY.md)
   connection (RFC 5766 §7.2 framing, dies with its allocations).
 * `lib/exjabberd/mod/jingle.ex` — XEP-0166 signaling-only session
   tracking + XEP-0215 extdisco (STUN/TURN services + credentials).
-* `lib/exjabberd/mod/omemo.ex` — XEP-0384 legacy OMEMO nodes over
-  PEP (devicelist + per-device bundles, open/open, max_items 1).
+* `lib/exjabberd/mod/omemo.ex` — XEP-0384 OMEMO nodes over PEP,
+  all three generations (legacy devicelist + per-device bundle
+  nodes; :1/:2 devices node + single multi-item bundles node,
+  open/open; max_items 1 resp. max).
+* `test/exjabberd/omemo_test.exs` — OMEMO node classification /
+  auto-create config unit tests; `test_omemo2_phase18.py` — live
+  OMEMO :1/:2 probe (raw sockets).
 * `lib/exjabberd/mqtt/codec.ex` — MQTT v3.1.1 packet codec
   (fixed header, Remaining Length, all 14 packet types, topic
   validation + `+`/`#` matching).

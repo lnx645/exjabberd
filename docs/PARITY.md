@@ -3,7 +3,7 @@
 Date: 2026-11-12 (Fase 10–15 of the 100% round); re-verified and
 extended 2026-11-13 (Fase 16: verify.sh harness fix, room-creation
 race fix, SQL/PostgreSQL auth backend — see Known limitations;
-Fase 17: MQTT 5.0).
+Fase 17: MQTT 5.0; Fase 18: OMEMO generations :1/:2).
 Method: every item below is judged only from evidence produced in this
 repo — a named probe with a pass count, or `mix test`. "Works" means a
 real client spoke to a real server over the wire; a module that merely
@@ -12,28 +12,31 @@ as verified. Reproduce everything with `./verify.sh`.
 
 ## Verdict
 
-**Not 100%.** On the 64-item checklist below: **53 verified, 7 partial,
-4 not implemented — (53 + 7×0.5) / 64 ≈ 88%.**
+**Not 100%.** On the 64-item checklist below: **54 verified, 7 partial,
+3 not implemented — (54 + 7×0.5) / 64 ≈ 90%.**
 
-That 88% is honest only for this checklist. Against ejabberd's full
+That 90% is honest only for this checklist. Against ejabberd's full
 module catalogue it would be lower: the long tail of ejabberd modules
 is counted here as a handful of grouped items, not one item per
 module. The core that a small private server actually needs — C2S,
 SM/Carbons/CSI, MAM, PubSub/PEP with collections and subscription
 authorization, full MUC with admin IQs, MIX core, S2S dialback,
 BOSH/WebSocket, upload with quota, HTTPS + captcha + ACME http-01,
-Jingle signaling, MQTT 3.1.1 and 5.0, clustering,
-Mnesia + SQLite auth, roster subscriptions, privacy/blocking, vCard,
-private storage, last activity, ad-hoc commands — is real and proven.
+Jingle signaling, MQTT 3.1.1 and 5.0, OMEMO in all three wire
+generations, clustering, Mnesia + SQLite auth, roster subscriptions,
+privacy/blocking, vCard, private storage, last activity, ad-hoc
+commands — is real and proven.
 The gaps are the enterprise edges: alternate auth backends (MySQL /
-LDAP / PAM), OMEMO generations :1/:2, S2S EXTERNAL/Bidi, HTTP/2, and
-the remaining grouped long tail (item 64).
+LDAP / PAM), S2S EXTERNAL/Bidi, HTTP/2, and the remaining grouped
+long tail (item 64).
 
-## Evidence (all re-run green by `./verify.sh` on 2026-11-13, Fase 17)
+## Evidence (all re-run green on 2026-11-13, Fase 18 — every
+`./verify.sh` step executed; the run was split across a sandbox
+restart, each step's own log/count is the evidence)
 
 | Proof | Result |
 |---|---|
-| `mix test` (12 ExUnit files) | 135/135, 0 failures |
+| `mix test` (13 ExUnit files) | 140/140, 0 failures |
 | `mix compile` | 0 warnings (warnings are errors) |
 | `audit_raw_test.py` (raw sockets, C2S core) | 18/18 |
 | `audit_slix_test.py` (slixmpp 1.17) | 10/10 |
@@ -58,8 +61,9 @@ the remaining grouped long tail (item 64).
 | `test_auth_sql_phase16.py` (SQL auth vs real PostgreSQL 16.9; own server + own PG) | 19/19 |
 | `test_auth_backends_phase16.py` (JWT / OAuth / external auth; own server per backend) | 25/25 |
 | `test_mqtt5_phase17.py` (MQTT 5.0: paho v5 + raw-socket client) | 21/21 |
+| `test_omemo2_phase18.py` (OMEMO :1/:2 over PEP, raw sockets) | 17/17 |
 
-Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25+21 = **485**.
+Total wire-probe checks: 18+10+36+47+12+17+4+46+25+2+28+22+19+30+17+10+23+16+17+21+19+25+21+17 = **502**.
 
 ## Checklist
 
@@ -131,7 +135,7 @@ above) · **P** = partial (works, with a named limit) ·
 | 38 | Captcha endpoint | V | HTTP-edges 21/21: create, PNG image, wrong answer 403, right answer 200, replay 403 (single-use, 300 s TTL) |
 | 39 | ACME challenge handling, HTTP/2 | P | ACME http-01 serving verified (HTTP-edges 21/21: configured token served, unknown 404). HTTP/2 NOT implemented: the listener is a hand-rolled HTTP/1.1 server; an h2/HPACK stack is out of scope here |
 
-### Media / signaling — 2 V, 3 P, 1 N
+### Media / signaling — 3 V, 3 P, 0 N
 
 | # | Item | Status | Evidence / limit |
 |---|---|---|---|
@@ -140,7 +144,7 @@ above) · **P** = partial (works, with a named limit) ·
 | 42 | TURN (RFC 5766): Allocate/Refresh/Permissions/ChannelBind/relay | P | TURN over TCP verified live 2/2; live UDP relay unproven for the same sandbox reason; no per-user quota beyond global `max_allocations` |
 | 43 | External service discovery (XEP-0215, incl. time-limited TURN credentials) | V | Jingle 25/25 |
 | 44 | OMEMO legacy generation (XEP-0384 over PEP) | V | Jingle 25/25 |
-| 45 | OMEMO generations `:1` / `:2` | N | not implemented or advertised |
+| 45 | OMEMO generations `:1` / `:2` | V | `test_omemo2_phase18.py` 17/17 + 5 ExUnit — per XEP-0384 §5.3: `urn:xmpp:omemo:N:devices` node (single item id `current`, access open) and ONE `urn:xmpp:omemo:N:bundles` node per account holding one `<bundle/>` item per device (item id = device id, auto-created with `max_items` = max); publish-options honoured, peer without subscription fetches devices + bundles, single-bundle fetch by `<item id/>` (XEP-0060 §6.5.2, newly implemented in `PubSub`), republish replaces only the publisher's own item, non-owner publish → `forbidden`, disco#info advertises `urn:xmpp:omemo:1` + `urn:xmpp:omemo:2`, disco#items lists the nodes, PEP event notifications flow, `<encrypted xmlns='urn:xmpp:omemo:2'/>` payloads routed intact; :1 and :2 nodes isolated per user. Server side is plumbing only — no cryptography, as with the legacy generation |
 
 ### MQTT — 3 V, 0 N
 
@@ -183,10 +187,10 @@ above) · **P** = partial (works, with a named limit) ·
 
 ## Count
 
-- Verified (V): 53 — items 1–29, 32–38, 43–44, 46–48, 49–50, 52–53, 56–63.
+- Verified (V): 54 — items 1–29, 32–38, 43–48, 49–50, 52–53, 56–63.
 - Partial (P): 7 — items 39 (ACME yes, HTTP/2 no), 40–42 (Jingle signaling; STUN/TURN UDP unproven in the sandbox), 51 (cluster completeness), 54 (SQL auth: PostgreSQL verified, MySQL not implemented), 55 (JWT/OAuth/external verified; LDAP + PAM not implemented).
-- Not implemented (N): 4 — items 30–31 (S2S EXTERNAL, Bidi), 45 (OMEMO :1/:2), 64 (grouped long tail).
-- Total: 64. Score: (53 + 7 × 0.5) / 64 = 56.5 / 64 ≈ **88%**.
+- Not implemented (N): 3 — items 30–31 (S2S EXTERNAL, Bidi), 64 (grouped long tail).
+- Total: 64. Score: (54 + 7 × 0.5) / 64 = 57.5 / 64 ≈ **90%**.
 
 (The earlier draft of this section still carried the pre-Fase-10
 counts — 34/9/21 ≈ 60% — long after the checklist rows above it had
